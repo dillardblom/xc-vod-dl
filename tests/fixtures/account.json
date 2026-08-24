@@ -1,0 +1,24 @@
+{
+  "user_info": {
+    "username": "demo",
+    "password": "demo",
+    "message": "",
+    "auth": 1,
+    "status": "Active",
+    "exp_date": "1893456000",
+    "is_trial": "0",
+    "active_cons": "0",
+    "created_at": "1609459200",
+    "max_connections": "2",
+    "allowed_output_formats": ["m3u8", "ts"]
+  },
+  "server_info": {
+    "url": "example.com",
+    "port": "80",
+    "https_port": "443",
+    "server_protocol": "https",
+    "timezone": "Europe/Amsterdam",
+    "timestamp_now": 1893456000,
+    "time_now": "2030-01-01 00:00:00"
+  }
+}

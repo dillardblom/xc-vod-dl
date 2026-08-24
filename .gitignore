@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# runtime artifacts — never commit real config/credentials or downloaded state
+config.toml
+*.voddl
+state.db
+*.log

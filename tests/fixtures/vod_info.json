@@ -1,0 +1,20 @@
+{
+  "info": {
+    "tmdb_id": 550,
+    "name": "Example Movie",
+    "plot": "A movie used as a test fixture.",
+    "genre": "Drama",
+    "releasedate": "2024-03-15",
+    "duration_secs": 6300,
+    "duration": "01:45:00",
+    "rating": "7.5"
+  },
+  "movie_data": {
+    "stream_id": 101,
+    "name": "Example Movie (2024)",
+    "added": "1710000000",
+    "category_id": "1",
+    "container_extension": "mkv",
+    "direct_source": ""
+  }
+}

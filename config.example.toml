@@ -1,0 +1,33 @@
+# Copy this file to config.toml (same directory, or ~/.config/xc-vod-dl/config.toml)
+# and fill in your own values. config.toml is gitignored — never commit real credentials.
+
+[account]
+server = "https://your-xtream-server.example.com"
+username = "your-username"
+password = "your-password"
+
+[download]
+# Root directories, relative to the current working directory unless absolute.
+movies_dir = "Movies"
+series_dir = "Series"
+
+# Verification mode: "quick" (fast, container/duration check) or "full" (slow, full decode).
+verify_mode = "quick"
+
+# Write a .nfo (Kodi/Jellyfin/Plex-style metadata) and cover.png next to each item.
+download_nfo = true
+download_cover = true
+
+logfile = "voddl.log"
+
+[concurrency]
+# Hard ceiling on parallel transfers, regardless of what the account reports.
+max_parallel_ceiling = 4
+# Streams held back from max_connections as headroom for other uses of the account.
+safety_margin = 1
+# Seconds to wait after stepping down before allowing a step back up.
+cooldown_s = 30
+# Consecutive clean transfers required before stepping the limit back up.
+recovery_streak = 3
+# Aggregate throughput below this fraction of the run's early baseline is treated as overload.
+collapse_floor_pct = 0.2

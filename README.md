@@ -1,0 +1,106 @@
+# xc-vod-dl
+
+Interactive CLI for downloading movies and series from an Xtream Codes (XC) IPTV
+server, built for people who already pay for/run their own legal IPTV service and
+just want a sane local library — not another paywalled "season downloader" script.
+
+- Browse and search Movies/VOD and Series interactively, or drive it non-interactively
+  from a manifest file for scripting.
+- **Resume**, not restart: a network hiccup mid-download picks up where it left off.
+- **Verification**: every finished file is checked with `ffprobe`/`ffmpeg` before it's
+  considered done — a "successful" download that's actually corrupt gets caught.
+- **Adaptive parallel downloads**: sizes itself from your account's `max_connections`,
+  falls back toward serial automatically if the server starts throttling mid-run.
+- **Missing-episode report**: tells you when a season has gaps (e.g. has S01E08 and
+  S01E10, flags S01E09 as missing) before you start downloading.
+
+## Requirements
+
+- Python 3.10+
+- `ffmpeg`/`ffprobe` on `PATH` (used to verify downloads — auto-detected, or point
+  at them explicitly via `config.toml`)
+- Your own Xtream Codes server URL + username + password
+
+## Install
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Configure
+
+```bash
+cp config.example.toml config.toml   # or ~/.config/xc-vod-dl/config.toml
+```
+
+Fill in your server URL, username, and password. `config.toml` is gitignored —
+never commit real credentials. Credentials can also be supplied via
+`XCVODDL_SERVER` / `XCVODDL_USERNAME` / `XCVODDL_PASSWORD` environment variables,
+or `--server` / `--username` / `--password` CLI flags (highest priority first:
+CLI flag, env var, config file).
+
+## Usage
+
+### Interactive
+
+```bash
+xc-vod-dl browse
+```
+
+Walks you through Movies/Series → category → item(s), with a missing-episode
+report shown before you commit to downloading a series.
+
+### Scripted (manifest file)
+
+```bash
+cat > wanted.txt <<'EOF'
+movie:12345
+series:6789            # whole series, all seasons
+series:6789:2          # season 2 only
+series:6789:2:5         # a single episode
+EOF
+
+xc-vod-dl fetch -f wanted.txt -y
+```
+
+`#` starts a comment; blank lines are ignored. Exit code is `0` if everything
+succeeded, `1` on partial/total failure — safe to use in scripts/cron.
+
+### Other commands
+
+```bash
+xc-vod-dl gaps --series-id 6789        # report missing episodes, no download
+xc-vod-dl resume                       # retry anything left pending/failed in state.db
+xc-vod-dl clean                        # remove stray .voddl (unverified partial) files
+```
+
+`fetch`/`browse`/`resume` all accept `--serial` (force one-at-a-time),
+`--parallel N` (force a specific count), and `--verify-mode quick|full`
+to override what's in `config.toml` for a single run.
+
+### How resume/verify actually works
+
+Every in-progress file is written as `<name>.<ext>.voddl` — a `.voddl` file
+left in a folder is *known-incomplete* and safe to ignore or `xc-vod-dl clean`.
+On a network hiccup, the next attempt sends an HTTP `Range` request picking up
+from the `.voddl` file's current size rather than starting over. Once a
+download completes, `ffprobe` (or `ffmpeg` in `full` mode) checks it's actually
+decodable before the file is atomically renamed to its final name — a
+"finished" download that's secretly corrupt never gets marked done.
+
+## Development
+
+```bash
+pytest              # fast unit tests + hermetic local-server integration tests
+ruff check .
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

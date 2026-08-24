@@ -1,0 +1,12 @@
+[
+  {
+    "num": 1,
+    "name": "Example Series",
+    "series_id": 6789,
+    "cover": "https://example.com/6789.jpg",
+    "plot": "A series used as a test fixture.",
+    "genre": "Sci-Fi",
+    "releaseDate": "2022-09-01",
+    "category_id": "3"
+  }
+]

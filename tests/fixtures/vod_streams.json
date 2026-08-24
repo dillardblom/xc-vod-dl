@@ -1,0 +1,13 @@
+[
+  {
+    "num": 1,
+    "name": "Example Movie (2024)",
+    "stream_type": "movie",
+    "stream_id": 101,
+    "stream_icon": "https://example.com/101.jpg",
+    "rating": "7.5",
+    "category_id": "1",
+    "container_extension": "mkv",
+    "direct_source": ""
+  }
+]

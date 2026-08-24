@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xc-vod-dl"
+version = "0.1.0"
+description = "Interactive downloader for Xtream Codes IPTV movies and series, with resume, ffprobe verification, adaptive parallel downloads, and missing-episode detection."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Dillard Blom" }]
+keywords = ["xtream-codes", "iptv", "vod", "downloader"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video",
+]
+dependencies = [
+  "requests>=2.31",
+  "click>=8.1",
+  "questionary>=2.0",
+  "rich>=13.7",
+  "tomli>=2.0; python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "responses>=0.25",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+xc-vod-dl = "xc_vod_dl.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dillardblom/xc-vod-dl"
+Issues = "https://github.com/dillardblom/xc-vod-dl/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xc_vod_dl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: hermetic local-server integration tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# PYI034 wants __enter__ to return `Self`, which needs typing.Self (3.11+) or
+# a typing_extensions dependency — not worth it on a py310 floor for a style nit.
+ignore = ["PYI034"]

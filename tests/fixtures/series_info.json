@@ -1,0 +1,32 @@
+{
+  "seasons": [
+    {
+      "air_date": "2022-09-01",
+      "episode_count": 10,
+      "id": 1,
+      "name": "Season 1",
+      "overview": "First season.",
+      "season_number": 1
+    }
+  ],
+  "info": {
+    "name": "Example Series",
+    "cover": "https://example.com/6789.jpg",
+    "plot": "A series used as a test fixture.",
+    "genre": "Sci-Fi",
+    "tmdb_id": 12345
+  },
+  "episodes": {
+    "1": [
+      { "id": "9001", "episode_num": 1, "title": "Pilot", "container_extension": "mkv", "season": 1, "info": { "plot": "Episode 1 plot." } },
+      { "id": "9002", "episode_num": 2, "title": "Episode 2", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9003", "episode_num": 3, "title": "Episode 3", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9004", "episode_num": 4, "title": "Episode 4", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9005", "episode_num": 5, "title": "Episode 5", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9006", "episode_num": 6, "title": "Episode 6", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9007", "episode_num": 7, "title": "Episode 7", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9008", "episode_num": 8, "title": "Episode 8", "container_extension": "mkv", "season": 1, "info": {} },
+      { "id": "9010", "episode_num": 10, "title": "Episode 10", "container_extension": "mkv", "season": 1, "info": {} }
+    ]
+  }
+}
