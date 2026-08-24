@@ -248,7 +248,8 @@ def _run_jobs(
         results = {}
         for job in jobs:
             cb = (lambda n, jid=job.id: reporter.report(jid, n)) if reporter else None
-            results[job.id] = engine.run(job, progress_cb=cb)
+            total_cb = (lambda n, jid=job.id: reporter.set_total(jid, n)) if reporter else None
+            results[job.id] = engine.run(job, progress_cb=cb, total_cb=total_cb)
         return results
 
     initial = parallel_override or initial_parallelism(
@@ -271,6 +272,7 @@ def _run_jobs(
         controller=controller,
         verify_mode=verify_mode,
         progress_cb=reporter.report if reporter else None,
+        total_cb=reporter.set_total if reporter else None,
     )
 
 

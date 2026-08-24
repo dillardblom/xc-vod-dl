@@ -159,3 +159,31 @@ def test_run_many_reports_progress_per_job(media_server, tmp_path):
 
     assert set(progress) == {j.id for j in jobs}
     assert all(n > 0 for n in progress.values())
+
+
+def test_run_many_reports_total_per_job(media_server, tmp_path):
+    url, state = media_server
+    jobs = [
+        DownloadJob(
+            id=f"movie:{i}", url=url, target_path=tmp_path / f"movie{i}.mp4", kind="movie", title="x"
+        )
+        for i in range(3)
+    ]
+    totals: dict[str, int] = {}
+    lock = threading.Lock()
+
+    def total_cb(job_id: str, n: int) -> None:
+        with lock:
+            totals[job_id] = n
+
+    with StateStore(":memory:") as store:
+        controller = ConcurrencyController(initial=3, maximum=3)
+        run_many(
+            jobs,
+            session_factory=requests.Session,
+            state=store,
+            controller=controller,
+            total_cb=total_cb,
+        )
+
+    assert totals == {j.id: len(state["data"]) for j in jobs}

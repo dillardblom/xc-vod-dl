@@ -22,6 +22,28 @@ def test_download_file_fresh(media_server, tmp_path):
     assert state["requests"] == [None]
 
 
+def test_download_file_reports_total_from_content_length(media_server, tmp_path):
+    url, state = media_server
+    target = tmp_path / "out.mp4"
+    totals = []
+    download_file(requests.Session(), url, target, total_cb=totals.append)
+    assert totals == [len(state["data"])]
+
+
+def test_download_file_reports_total_accounting_for_resume_offset(media_server, tmp_path):
+    url, state = media_server
+    target = tmp_path / "out.mp4"
+    half = len(state["data"]) // 2
+    target.write_bytes(state["data"][:half])
+
+    totals = []
+    download_file(requests.Session(), url, target, total_cb=totals.append)
+
+    # A 206 response's Content-Length is only the *remaining* bytes — the
+    # reported total must still be the full file size, not just the remainder.
+    assert totals == [len(state["data"])]
+
+
 def test_download_file_resumes_from_existing_partial(media_server, tmp_path):
     url, state = media_server
     target = tmp_path / "out.mp4"
@@ -70,6 +92,20 @@ def test_engine_run_downloads_verifies_and_commits(media_server, tmp_path):
         assert not tmp_path_for(target).exists()
         record = state_store.get("movie:1")
         assert record.status == "done"
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
+def test_engine_run_forwards_total_cb(media_server, tmp_path):
+    url, state = media_server
+    target = tmp_path / "out.mp4"
+    job = DownloadJob(id="movie:1", url=url, target_path=target, kind="movie", title="Example")
+    totals = []
+
+    with StateStore(":memory:") as state_store:
+        engine = DownloadEngine(requests.Session(), state_store, verify_mode="quick")
+        engine.run(job, total_cb=totals.append)
+
+    assert totals == [len(state["data"])]
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")

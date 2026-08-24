@@ -52,6 +52,7 @@ def download_file(
     *,
     chunk_size: int = 1 << 16,
     progress_cb: ProgressCallback | None = None,
+    total_cb: Callable[[int], None] | None = None,
     timeout: float = 30.0,
 ) -> int:
     """Download `url` into `tmp_path`, resuming from any existing partial
@@ -61,6 +62,10 @@ def download_file(
     the partial file is left in place so a subsequent call can resume it,
     except when the server ignores our Range request, in which case the
     stale partial is discarded (it can't be trusted as a resume base).
+
+    `total_cb`, if given, is called once with the expected final file size in
+    bytes as soon as it's known from the response's Content-Length header —
+    servers don't always send one, so it may never fire.
     """
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
     resume_from = tmp_path.stat().st_size if tmp_path.exists() else 0
@@ -81,7 +86,13 @@ def download_file(
         resp.close()
         tmp_path.unlink(missing_ok=True)
         return download_file(
-            session, url, tmp_path, chunk_size=chunk_size, progress_cb=progress_cb, timeout=timeout
+            session,
+            url,
+            tmp_path,
+            chunk_size=chunk_size,
+            progress_cb=progress_cb,
+            total_cb=total_cb,
+            timeout=timeout,
         )
 
     if resp.status_code in (503, 429):
@@ -100,6 +111,15 @@ def download_file(
 
     mode = "ab" if resp.status_code == 206 else "wb"
     bytes_on_disk = resume_from if mode == "ab" else 0
+
+    if total_cb is not None:
+        content_length = resp.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                # A 206 response's Content-Length is only the remaining bytes.
+                total_cb(bytes_on_disk + int(content_length))
+            except ValueError:
+                pass
 
     try:
         with tmp_path.open(mode) as f:
@@ -148,7 +168,12 @@ class DownloadEngine:
         self.chunk_size = chunk_size
         self.controller = controller
 
-    def run(self, job: DownloadJob, progress_cb: ProgressCallback | None = None) -> bool:
+    def run(
+        self,
+        job: DownloadJob,
+        progress_cb: ProgressCallback | None = None,
+        total_cb: Callable[[int], None] | None = None,
+    ) -> bool:
         """Returns True if the job ends up done (already-existing files count),
         False if every attempt was exhausted without producing a verified file."""
         if job.target_path.exists():
@@ -195,6 +220,7 @@ class DownloadEngine:
                     tmp_path,
                     chunk_size=self.chunk_size,
                     progress_cb=combined_progress,
+                    total_cb=total_cb,
                 )
             except DownloadError as exc:
                 if self.controller is not None:
@@ -250,6 +276,7 @@ def run_many(
     max_attempts: int = 3,
     chunk_size: int = 1 << 16,
     progress_cb: Callable[[str, int], None] | None = None,
+    total_cb: Callable[[str, int], None] | None = None,
 ) -> dict[str, bool]:
     """Run `jobs` through `controller`'s dynamically-sized pool.
 
@@ -275,7 +302,8 @@ def run_many(
             controller=controller,
         )
         cb = (lambda n, jid=job.id: progress_cb(jid, n)) if progress_cb else None
-        return job.id, engine.run(job, progress_cb=cb)
+        total = (lambda n, jid=job.id: total_cb(jid, n)) if total_cb else None
+        return job.id, engine.run(job, progress_cb=cb, total_cb=total)
 
     results: dict[str, bool] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=controller.maximum) as pool:

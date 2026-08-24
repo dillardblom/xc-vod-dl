@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import questionary
 from click.testing import CliRunner
 
 from xc_vod_dl.cli import main
@@ -22,16 +23,42 @@ class _FakeQuestion:
         return self._answer
 
 
+def _title_and_value(choice):
+    # Plain strings have a `.title` *method*, so hasattr(choice, "title") is
+    # true for them too — must check the actual Choice type instead.
+    if isinstance(choice, questionary.Choice):
+        return choice.title, choice.value
+    return choice, choice
+
+
 def _select_sequence(monkeypatch, answers):
     it = iter(answers)
-    monkeypatch.setattr(
-        interactive_module.questionary, "select", lambda message, choices: _FakeQuestion(next(it))
-    )
+
+    def fake_select(message, choices):
+        answer = next(it)
+        if answer is None:
+            return _FakeQuestion(None)
+        for choice in choices:
+            title, value = _title_and_value(choice)
+            if title == answer:
+                return _FakeQuestion(value)
+        raise AssertionError(f"no choice titled {answer!r}")
+
+    monkeypatch.setattr(interactive_module.questionary, "select", fake_select)
 
 
-def _checkbox_once(monkeypatch, answer):
+def _checkbox_once(monkeypatch, answer_titles):
+    def fake_checkbox(message, choices):
+        selected = [v for t, v in (_title_and_value(c) for c in choices) if t in answer_titles]
+        return _FakeQuestion(selected)
+
+    monkeypatch.setattr(interactive_module.questionary, "checkbox", fake_checkbox)
+
+
+def _text_sequence(monkeypatch, answers):
+    it = iter(answers)
     monkeypatch.setattr(
-        interactive_module.questionary, "checkbox", lambda message, choices: _FakeQuestion(answer)
+        interactive_module.questionary, "text", lambda message: _FakeQuestion(next(it))
     )
 
 
@@ -203,7 +230,7 @@ def test_browse_command_end_to_end(xtream_server, monkeypatch, tmp_path):
         "movie_data": {"stream_id": 101, "name": "Example Movie", "container_extension": "mp4"},
     }
 
-    _select_sequence(monkeypatch, ["Movies", "Action", "Done"])
+    _select_sequence(monkeypatch, ["Movies", "Browse by category", "Action", "Done"])
     _checkbox_once(monkeypatch, ["Example Movie"])
 
     runner = CliRunner()
@@ -243,7 +270,10 @@ def test_browse_command_series_end_to_end(xtream_server, monkeypatch, tmp_path):
         },
     }
 
-    _select_sequence(monkeypatch, ["Series", "Sci-Fi", "Example Series", "Whole series", "Done"])
+    _select_sequence(
+        monkeypatch,
+        ["Series", "Browse by category", "Sci-Fi", "Example Series", "Whole series", "Done"],
+    )
 
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -255,6 +285,34 @@ def test_browse_command_series_end_to_end(xtream_server, monkeypatch, tmp_path):
             Path("Series") / "Example Series" / "Season 01" / "Example Series - S01E01 - Pilot.mp4"
         )
         assert episode_path.exists()
+
+
+def test_browse_command_search_end_to_end(xtream_server, monkeypatch, tmp_path):
+    """Search spans categories: this movie is findable by name without ever
+    picking 'Action' as a category first."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["vod_categories"] = [{"category_id": "1", "category_name": "Action"}]
+    state["vod_streams"] = [
+        {"stream_id": 101, "name": "Example Movie", "category_id": "1", "container_extension": "mp4"},
+        {"stream_id": 102, "name": "Unrelated", "category_id": "1", "container_extension": "mp4"},
+    ]
+    state["vod_info"]["101"] = {
+        "info": {"name": "Example Movie", "releasedate": "2024-03-15"},
+        "movie_data": {"stream_id": 101, "name": "Example Movie", "container_extension": "mp4"},
+    }
+
+    _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["example"])
+    _checkbox_once(monkeypatch, ["Example Movie  [Action]"])
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["browse", "--serial"], input="y\n")
+
+        assert result.exit_code == 0, result.output
+        assert "1 succeeded" in result.output
+        assert (Path("Movies") / "Example Movie (2024)" / "Example Movie (2024).mp4").exists()
 
 
 def test_browse_command_nothing_selected_downloads_nothing(xtream_server, monkeypatch, tmp_path):

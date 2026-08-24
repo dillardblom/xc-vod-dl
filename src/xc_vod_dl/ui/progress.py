@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rich.progress import (
+    BarColumn,
     DownloadColumn,
     Progress,
     SpinnerColumn,
@@ -13,12 +14,18 @@ from rich.progress import (
 class ProgressReporter:
     """One live row per in-flight download, fed by the same (job_id, bytes)
     callback the download engine already calls for the concurrency
-    controller's throughput tracking — no separate progress-tracking path."""
+    controller's throughput tracking — no separate progress-tracking path.
+
+    Total size is unknown (shows as "?", indeterminate bar) until the server's
+    Content-Length header tells us otherwise — see set_total()/total_cb in
+    download/engine.py. Not every server sends one, so it may never fire.
+    """
 
     def __init__(self) -> None:
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[bold]{task.fields[title]}"),
+            BarColumn(),
             DownloadColumn(),
             TransferSpeedColumn(),
             TimeElapsedColumn(),
@@ -39,3 +46,8 @@ class ProgressReporter:
         task_id = self._task_ids.get(job_id)
         if task_id is not None:
             self._progress.update(task_id, advance=n)
+
+    def set_total(self, job_id: str, total: int) -> None:
+        task_id = self._task_ids.get(job_id)
+        if task_id is not None:
+            self._progress.update(task_id, total=total)
