@@ -1,3 +1,5 @@
+import urllib.parse
+
 import responses
 
 from xc_vod_dl.api.client import XtreamClient
@@ -68,6 +70,13 @@ def test_get_series_streams(load_fixture):
     )
     series = make_client().get_series_streams()
     assert len(series) == 1
+    # Regression guard: the real Xtream action for listing series is `get_series`,
+    # not the more-guessable `get_series_streams` — confirmed against a real
+    # Dispatcharr server, where sending the wrong action silently fell through
+    # to the account-info handler instead of erroring, so this must be asserted
+    # explicitly rather than trusted to surface via a response-shape mismatch.
+    sent_query = urllib.parse.parse_qs(urllib.parse.urlparse(responses.calls[-1].request.url).query)
+    assert sent_query["action"] == ["get_series"]
     assert series[0].series_id == 6789
     assert series[0].name == "Example Series"
 

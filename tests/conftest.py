@@ -136,7 +136,7 @@ class XtreamServerHandler(http.server.BaseHTTPRequestHandler):
                 payload = state.get("series_categories", [])
             elif action == "get_vod_streams":
                 payload = state.get("vod_streams", [])
-            elif action == "get_series_streams":
+            elif action == "get_series":
                 payload = state.get("series_streams", [])
             else:
                 payload = {}

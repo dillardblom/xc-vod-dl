@@ -68,7 +68,14 @@ class XtreamClient:
         return [VodStream.from_json(v) for v in _as_list(data)]
 
     def get_series_streams(self, category_id: str | None = None) -> list[SeriesStream]:
-        params = {"action": "get_series_streams"}
+        # The Xtream API action for listing series is `get_series`, not the
+        # more guessable `get_series_streams` (confirmed against a real
+        # Dispatcharr server — `get_series_streams` silently falls through to
+        # the account-info handler there instead of erroring, which is what
+        # made this easy to miss). Keeping this method's own name as-is since
+        # it mirrors get_vod_streams/get_live_streams naming from the rest of
+        # this client.
+        params = {"action": "get_series"}
         if category_id is not None:
             params["category_id"] = category_id
         data = self._get(params)

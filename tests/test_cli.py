@@ -215,6 +215,48 @@ def test_browse_command_end_to_end(xtream_server, monkeypatch, tmp_path):
         assert (Path("Movies") / "Example Movie (2024)" / "Example Movie (2024).mp4").exists()
 
 
+def test_browse_command_series_end_to_end(xtream_server, monkeypatch, tmp_path):
+    """End-to-end regression test for the get_series/get_series_streams action-name
+    mismatch found against a real Dispatcharr server: this drives the full
+    browse -> client.get_series_streams() -> real HTTP call -> download path,
+    so a wrong action name fails loudly instead of silently skipping series."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["series_categories"] = [{"category_id": "3", "category_name": "Sci-Fi"}]
+    state["series_streams"] = [
+        {"series_id": 6789, "name": "Example Series", "category_id": "3"}
+    ]
+    state["series_info"]["6789"] = {
+        "seasons": [{"season_number": 1, "name": "Season 1", "episode_count": 1}],
+        "info": {"name": "Example Series"},
+        "episodes": {
+            "1": [
+                {
+                    "id": "9001",
+                    "episode_num": 1,
+                    "title": "Pilot",
+                    "container_extension": "mp4",
+                    "season": 1,
+                    "info": {},
+                }
+            ]
+        },
+    }
+
+    _select_sequence(monkeypatch, ["Series", "Sci-Fi", "Example Series", "Whole series", "Done"])
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["browse", "--serial"], input="y\n")
+
+        assert result.exit_code == 0, result.output
+        assert "1 succeeded" in result.output
+        episode_path = (
+            Path("Series") / "Example Series" / "Season 01" / "Example Series - S01E01 - Pilot.mp4"
+        )
+        assert episode_path.exists()
+
+
 def test_browse_command_nothing_selected_downloads_nothing(xtream_server, monkeypatch, tmp_path):
     base_url, _state = xtream_server
     _set_env(monkeypatch, base_url)
