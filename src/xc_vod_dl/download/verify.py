@@ -16,6 +16,7 @@ class VerifyResult:
     ok: bool
     duration_s: float | None = None
     reason: str | None = None
+    warning: str | None = None
 
 
 def resolve_tool_path(configured: str | None, tool_name: str) -> str:
@@ -74,8 +75,6 @@ def _verify_quick(path: Path, ffprobe_path: str, timeout_s: float) -> VerifyResu
     stderr = proc.stderr.strip()
     if proc.returncode != 0:
         return VerifyResult(ok=False, reason=stderr or f"ffprobe exited {proc.returncode}")
-    if stderr:
-        return VerifyResult(ok=False, reason=stderr)
 
     stdout = proc.stdout.strip()
     try:
@@ -85,7 +84,13 @@ def _verify_quick(path: Path, ffprobe_path: str, timeout_s: float) -> VerifyResu
 
     if duration <= 0:
         return VerifyResult(ok=False, duration_s=duration, reason="duration is zero or negative")
-    return VerifyResult(ok=True, duration_s=duration)
+
+    # ffprobe can exit 0 while still printing an `error`-level message for
+    # something that doesn't actually affect playability — e.g. some MP4 muxers
+    # leave a dangling reference to a QuickTime chapter track. Surface it as a
+    # warning rather than failing the file: the authoritative signal is the
+    # exit code + a valid parsed duration, not "did ffprobe print anything."
+    return VerifyResult(ok=True, duration_s=duration, warning=stderr or None)
 
 
 def _verify_full(path: Path, ffmpeg_path: str, timeout_s: float) -> VerifyResult:
@@ -101,6 +106,6 @@ def _verify_full(path: Path, ffmpeg_path: str, timeout_s: float) -> VerifyResult
         return VerifyResult(ok=False, reason="ffmpeg timed out")
 
     stderr = proc.stderr.strip()
-    if proc.returncode != 0 or stderr:
+    if proc.returncode != 0:
         return VerifyResult(ok=False, reason=stderr or f"ffmpeg exited {proc.returncode}")
-    return VerifyResult(ok=True)
+    return VerifyResult(ok=True, warning=stderr or None)

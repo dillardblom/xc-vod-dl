@@ -23,6 +23,16 @@ def default_config_path() -> Path:
     return base / "xc-vod-dl" / "config.toml"
 
 
+def _resolve_default_config_path() -> Path:
+    """A `config.toml` in the current directory takes precedence over the
+    XDG user config, so `cp config.example.toml config.toml` inside a
+    project/download directory works without needing `--config` every time."""
+    local = Path("config.toml")
+    if local.is_file():
+        return local
+    return default_config_path()
+
+
 @dataclass(frozen=True)
 class AccountConfig:
     server: str
@@ -74,7 +84,7 @@ def load_config(
 
     Raises ConfigError if credentials cannot be resolved from any source.
     """
-    path = config_path or default_config_path()
+    path = config_path or _resolve_default_config_path()
     raw = _load_toml(path)
 
     raw_account = raw.get("account", {})

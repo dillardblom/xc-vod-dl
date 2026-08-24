@@ -1,4 +1,6 @@
 import shutil
+import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -41,6 +43,52 @@ def test_verify_full_passes_for_valid_file():
 def test_verify_full_fails_for_truncated_file():
     result = verify_media(FIXTURES / "tiny_truncated.mp4", mode="full")
     assert result.ok is False
+
+
+def test_verify_quick_accepts_a_file_with_a_benign_stderr_warning():
+    """Regression test: found on a real Xtream server (Dispatcharr) — a fully,
+    correctly downloaded MP4 can make ffprobe print an `error`-level message
+    for an unrelated QuickTime chapter-track reference while still exiting 0
+    and reporting a valid duration. That must NOT fail verification — it did,
+    before this fix, and caused a good download to be discarded and re-tried
+    forever."""
+    fake_proc = subprocess.CompletedProcess(
+        args=["ffprobe"],
+        returncode=0,
+        stdout="5820.0\n",
+        stderr="[mov,mp4,m4a,3gp,3g2,mj2 @ 0x0] Referenced QT chapter track not found\n",
+    )
+    with patch("xc_vod_dl.download.verify.subprocess.run", return_value=fake_proc):
+        result = verify_media(FIXTURES / "tiny.mp4", mode="quick", ffprobe_path="/fake/ffprobe")
+
+    assert result.ok is True
+    assert result.duration_s == 5820.0
+    assert result.warning and "chapter track" in result.warning
+
+
+def test_verify_full_accepts_a_file_with_a_benign_stderr_warning():
+    fake_proc = subprocess.CompletedProcess(
+        args=["ffmpeg"],
+        returncode=0,
+        stdout="",
+        stderr="[mov,mp4,m4a,3gp,3g2,mj2 @ 0x0] Referenced QT chapter track not found\n",
+    )
+    with patch("xc_vod_dl.download.verify.subprocess.run", return_value=fake_proc):
+        result = verify_media(FIXTURES / "tiny.mp4", mode="full", ffmpeg_path="/fake/ffmpeg")
+
+    assert result.ok is True
+    assert result.warning and "chapter track" in result.warning
+
+
+def test_verify_quick_still_fails_on_nonzero_exit_despite_parseable_stdout():
+    fake_proc = subprocess.CompletedProcess(
+        args=["ffprobe"], returncode=1, stdout="5820.0\n", stderr="some real error\n"
+    )
+    with patch("xc_vod_dl.download.verify.subprocess.run", return_value=fake_proc):
+        result = verify_media(FIXTURES / "tiny.mp4", mode="quick", ffprobe_path="/fake/ffprobe")
+
+    assert result.ok is False
+    assert result.reason == "some real error"
 
 
 def test_verify_media_rejects_unknown_mode():

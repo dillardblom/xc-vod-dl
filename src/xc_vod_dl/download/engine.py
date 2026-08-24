@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from xc_vod_dl.download.concurrency import ConcurrencyController, TransferOutcom
 from xc_vod_dl.download.verify import VerifyMode, verify_media
 from xc_vod_dl.exceptions import DownloadError
 from xc_vod_dl.state.store import StateStore
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int], None]
 
@@ -215,6 +218,8 @@ class DownloadEngine:
                 ffmpeg_path=self.ffmpeg_path,
             )
             if result.ok:
+                if result.warning:
+                    logger.info("verify warning for %s (accepted): %s", job.id, result.warning)
                 job.target_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(tmp_path, job.target_path)
                 self.state.mark_status(job.id, "done", bytes_downloaded=bytes_on_disk)
