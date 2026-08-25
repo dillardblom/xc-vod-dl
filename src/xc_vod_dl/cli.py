@@ -43,6 +43,26 @@ def _load_config_or_exit(
         sys.exit(2)
 
 
+def _setup_logging(config: Config, quiet: bool) -> None:
+    """Console respects --quiet; the configured logfile (if any) always gets
+    everything at INFO+ with a timestamp regardless of --quiet — including
+    the concurrency controller's step-up/step-down decisions, which
+    otherwise only ever existed in a terminal you'd already closed by the
+    time you wanted to know whether a run had actually hammered the server."""
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    console_handler.setLevel(logging.WARNING if quiet else logging.INFO)
+    handlers: list[logging.Handler] = [console_handler]
+
+    if config.download.logfile:
+        file_handler = logging.FileHandler(config.download.logfile)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        file_handler.setLevel(logging.INFO)
+        handlers.append(file_handler)
+
+    logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
+
+
 def _sanitize(name: str) -> str:
     """Strip characters that are unsafe as path components on common filesystems."""
     cleaned = "".join(c for c in name if c not in '/\\:*?"<>|').strip()
@@ -221,7 +241,29 @@ def _run_pipeline(
     """Shared by `fetch`/`browse`/`resume`: given resolved jobs and an open
     StateStore, run them through either the serial engine or the
     concurrency-controlled parallel engine, with a live progress display
-    unless --quiet."""
+    unless --quiet.
+
+    Every job is registered as "pending" up front, before any download
+    starts — not lazily as each one happens to reach the front of the
+    parallel pool. Without this, killing a run early (Ctrl+C) leaves
+    state.db only knowing about whichever handful of items a worker thread
+    had actually started on; everything still queued behind the
+    concurrency ceiling was never written down, so `resume` would silently
+    skip it and a "complete" series would quietly be missing episodes.
+    upsert_pending() is idempotent, so re-registering already-known jobs
+    (e.g. when this is called from `resume`) is a harmless no-op."""
+    for job in jobs:
+        state.upsert_pending(
+            id=job.id,
+            kind=job.kind,
+            title=job.title,
+            target_path=str(job.target_path),
+            series_id=job.series_id,
+            season=job.season,
+            episode_num=job.episode_num,
+            container_extension=job.container_extension,
+        )
+
     try:
         account = client.get_account()
     except XcVodDlError as exc:
@@ -321,9 +363,8 @@ def fetch(
     quiet: bool,
 ) -> None:
     """Download everything listed in a manifest file (non-interactive)."""
-    logging.basicConfig(level=logging.WARNING if quiet else logging.INFO, format="%(message)s")
-
     config = _load_config_or_exit(config_path, server, username, password)
+    _setup_logging(config, quiet)
     resolved_verify_mode = verify_mode or config.download.verify_mode
 
     try:
@@ -351,6 +392,7 @@ def fetch(
         sys.exit(1)
 
     click.echo(f"{len(jobs)} item(s) queued")
+    logger.info("%d item(s) queued", len(jobs))
     if not yes and not click.confirm("Proceed with download?", default=True):
         return
 
@@ -373,6 +415,7 @@ def fetch(
     succeeded = sum(1 for ok in results.values() if ok)
     failed = len(results) - succeeded
     click.echo(f"done: {succeeded} succeeded, {failed} failed")
+    logger.info("done: %d succeeded, %d failed", succeeded, failed)
     sys.exit(0 if failed == 0 else 1)
 
 
@@ -398,9 +441,8 @@ def browse(
     verify_mode: str | None,
 ) -> None:
     """Interactively browse and select movies/series to download."""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
     config = _load_config_or_exit(config_path, server, username, password)
+    _setup_logging(config, quiet=False)
     resolved_verify_mode = verify_mode or config.download.verify_mode
 
     client = XtreamClient(config.account.server, config.account.username, config.account.password)
@@ -422,6 +464,7 @@ def browse(
         sys.exit(1)
 
     click.echo(f"{len(jobs)} item(s) queued")
+    logger.info("%d item(s) queued", len(jobs))
     if not click.confirm("Proceed with download?", default=True):
         return
 
@@ -444,6 +487,7 @@ def browse(
     succeeded = sum(1 for ok in results.values() if ok)
     failed = len(results) - succeeded
     click.echo(f"done: {succeeded} succeeded, {failed} failed")
+    logger.info("done: %d succeeded, %d failed", succeeded, failed)
     sys.exit(0 if failed == 0 else 1)
 
 
@@ -506,14 +550,13 @@ def resume(
 ) -> None:
     """Retry pending/failed/in-progress items left over in state.db from a
     previous run, without re-browsing or re-querying the catalog."""
-    logging.basicConfig(level=logging.WARNING if quiet else logging.INFO, format="%(message)s")
-
     state_path = Path("state.db")
     if not state_path.exists():
         click.echo("no state.db found in the current directory — nothing to resume")
         return
 
     config = _load_config_or_exit(config_path, server, username, password)
+    _setup_logging(config, quiet)
     resolved_verify_mode = verify_mode or config.download.verify_mode
     client = XtreamClient(config.account.server, config.account.username, config.account.password)
     session = requests.Session()
@@ -563,6 +606,7 @@ def resume(
     succeeded = sum(1 for ok in results.values() if ok)
     failed = len(results) - succeeded
     click.echo(f"done: {succeeded} succeeded, {failed} failed")
+    logger.info("done: %d succeeded, %d failed", succeeded, failed)
     sys.exit(0 if failed == 0 else 1)
 
 

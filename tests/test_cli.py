@@ -107,6 +107,32 @@ def test_fetch_movie_end_to_end(xtream_server, monkeypatch, tmp_path):
         assert "<title>Example Movie (2024)</title>" in nfo_path.read_text()
 
 
+def test_fetch_writes_logfile_with_timestamps(xtream_server, monkeypatch, tmp_path):
+    """config.toml's `logfile` used to be defined but never actually wired up
+    to real file logging — everything only went to the console, so there was
+    no way to review what a run did (e.g. concurrency throttle decisions)
+    after the terminal was gone."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["vod_info"]["101"] = {
+        "info": {"name": "Example Movie", "releasedate": "2024-03-15"},
+        "movie_data": {"stream_id": 101, "name": "Example Movie", "container_extension": "mp4"},
+    }
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("manifest.txt").write_text("movie:101\n")
+        result = runner.invoke(main, ["fetch", "-f", "manifest.txt", "-y", "--serial"])
+
+        assert result.exit_code == 0, result.output
+        log_path = Path("voddl.log")
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert content.strip()
+        # timestamped, not just the bare console message
+        assert content.splitlines()[0][:4].isdigit()  # starts with a year
+
+
 def test_fetch_series_season_end_to_end(xtream_server, monkeypatch, tmp_path):
     base_url, state = xtream_server
     _set_env(monkeypatch, base_url)
@@ -458,3 +484,96 @@ def test_clean_asks_for_confirmation_by_default(tmp_path):
         runner.invoke(main, ["clean"], input="n\n")
 
         assert stray.exists()  # declined deletion
+
+
+def test_run_pipeline_registers_all_jobs_before_running_any(tmp_path):
+    """Regression test: killing a parallel run early used to leave state.db
+    only knowing about whichever handful of jobs a worker thread had
+    actually reached — anything still queued behind the concurrency ceiling
+    was invisible to `resume`. Every job must be a row in state.db *before*
+    _run_jobs (the actual download loop) is ever invoked."""
+    from unittest.mock import MagicMock, patch
+
+    import requests
+
+    from xc_vod_dl.cli import _run_pipeline
+    from xc_vod_dl.config import AccountConfig, Config
+    from xc_vod_dl.download.engine import DownloadJob
+
+    config = Config(account=AccountConfig(server="http://x", username="u", password="p"))
+    jobs = [
+        DownloadJob(
+            id=f"movie:{i}",
+            url="http://x/movie",
+            target_path=tmp_path / f"m{i}.mp4",
+            kind="movie",
+            title=f"Movie {i}",
+        )
+        for i in range(5)
+    ]
+
+    seen_ids_at_run_time = []
+
+    def fake_run_jobs(client, config, account, session, jobs, state, serial, parallel_override, verify_mode, reporter):
+        seen_ids_at_run_time.extend(r.id for r in state.list_all())
+        return {j.id: True for j in jobs}
+
+    client = MagicMock()
+    client.get_account.return_value = MagicMock(max_connections=4, active_cons=0)
+
+    with StateStore(":memory:") as state, patch("xc_vod_dl.cli._run_jobs", side_effect=fake_run_jobs):
+        _run_pipeline(
+            client,
+            config,
+            requests.Session(),
+            jobs,
+            state,
+            serial=True,
+            parallel_override=None,
+            verify_mode="quick",
+            quiet=True,
+        )
+
+    assert set(seen_ids_at_run_time) == {j.id for j in jobs}
+
+
+def test_run_pipeline_registration_is_idempotent_for_resume(tmp_path):
+    """upsert_pending() must not clobber a status resume already knows about
+    when _run_pipeline re-registers the same jobs."""
+    from unittest.mock import MagicMock
+
+    import requests
+
+    from xc_vod_dl.cli import _run_pipeline
+    from xc_vod_dl.config import AccountConfig, Config
+    from xc_vod_dl.download.engine import DownloadJob
+
+    config = Config(account=AccountConfig(server="http://x", username="u", password="p"))
+    job = DownloadJob(
+        id="movie:1", url="http://x/movie", target_path=tmp_path / "m.mp4", kind="movie", title="Movie"
+    )
+    client = MagicMock()
+    client.get_account.return_value = MagicMock(max_connections=4, active_cons=0)
+
+    with StateStore(":memory:") as state:
+        state.upsert_pending(id="movie:1", kind="movie", title="Movie", target_path=str(job.target_path))
+        state.mark_status("movie:1", "failed", last_error="previous attempt")
+
+        from unittest.mock import patch
+
+        with patch("xc_vod_dl.cli._run_jobs", return_value={"movie:1": True}):
+            _run_pipeline(
+                client,
+                config,
+                requests.Session(),
+                [job],
+                state,
+                serial=True,
+                parallel_override=None,
+                verify_mode="quick",
+                quiet=True,
+            )
+
+        record = state.get("movie:1")
+        assert record.status == "failed"  # not silently reset to "pending"
+        assert record.last_error == "previous attempt"
