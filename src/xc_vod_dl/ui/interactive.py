@@ -7,7 +7,8 @@ import questionary
 from rich.console import Console
 
 from xc_vod_dl.api.client import XtreamClient
-from xc_vod_dl.api.models import Category, SeriesStream
+from xc_vod_dl.api.models import Category, SeriesInfo, SeriesStream
+from xc_vod_dl.exceptions import XcVodDlError
 from xc_vod_dl.gaps import detect_gaps_in_series, format_gap_report
 from xc_vod_dl.jobs import JobSpec
 
@@ -74,73 +75,122 @@ def _handle_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     return _browse_series_by_category(client)
 
 
-def _search_and_select(
-    prompt: str,
+def _find_matches(
+    query: str,
     fetch_items: Callable[[], list[T]],
     fetch_categories: Callable[[], list[Category]],
     name_of: Callable[[T], str],
-    category_id_of: Callable[[T], str],
-    checkbox_label: str,
-) -> list[T]:
-    """Shared search-and-narrow flow for movies and series. Asks for the
-    query *before* fetching anything, so backing out costs no network call.
-    Cross-category by design: search spans the whole catalog for the given
-    type, since which category something landed in isn't always obvious.
-    Each result is labeled with its category name for that same reason."""
-    query = questionary.text(prompt).ask()
-    if not query:
-        return []
-
-    items = fetch_items()
-    cat_names = {c.category_id: c.category_name for c in fetch_categories()}
+    status_label: str,
+) -> tuple[list[T], dict[str, str]]:
+    """Fetches the catalog + categories under a spinner (the full catalog can
+    be tens of thousands of items and take several seconds) and filters by
+    case-insensitive substring match on name. Cross-category by design:
+    search spans the whole catalog for the given type, since which category
+    something landed in isn't always obvious."""
+    with console.status(status_label):
+        items = fetch_items()
+        cat_names = {c.category_id: c.category_name for c in fetch_categories()}
 
     query_lower = query.lower()
     matches = [item for item in items if query_lower in name_of(item).lower()]
-    if not matches:
-        console.print(f"[yellow]No results matching '{query}'.[/yellow]")
-        return []
     if len(matches) > _MAX_SEARCH_RESULTS:
         console.print(
             f"[dim]{len(matches)} matches for '{query}' — showing the first "
             f"{_MAX_SEARCH_RESULTS}. Narrow your search for more precise results.[/dim]"
         )
         matches = matches[:_MAX_SEARCH_RESULTS]
-
-    choices = [
-        questionary.Choice(
-            title=f"{name_of(item)}  [{cat_names.get(category_id_of(item), category_id_of(item))}]",
-            value=item,
-        )
-        for item in matches
-    ]
-    return questionary.checkbox(checkbox_label, choices=choices).ask() or []
+    return matches, cat_names
 
 
 def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec]:
-    selected = _search_and_select(
-        "Search movies:",
+    query = questionary.text("Search movies:").ask()
+    if not query:
+        return []
+
+    matches, cat_names = _find_matches(
+        query,
         lambda: _cached(cache, "vod_all", client.get_vod_streams),
         lambda: _cached(cache, "vod_categories", client.get_vod_categories),
         lambda s: s.name,
-        lambda s: s.category_id,
-        "Select movie(s) (space to toggle, enter to confirm):",
+        "Searching movies...",
     )
+    if not matches:
+        console.print(f"[yellow]No results matching '{query}'.[/yellow]")
+        return []
+
+    choices = [
+        questionary.Choice(
+            title=f"{s.name}  [{cat_names.get(s.category_id, s.category_id)}]", value=s
+        )
+        for s in matches
+    ]
+    selected = questionary.checkbox(
+        "Select movie(s) (space to toggle, enter to confirm):", choices=choices
+    ).ask()
+    if not selected:
+        return []
     return [JobSpec(kind="movie", id=s.stream_id) for s in selected]
 
 
 def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec]:
-    selected: list[SeriesStream] = _search_and_select(
-        "Search series:",
+    query = questionary.text("Search series:").ask()
+    if not query:
+        return []
+
+    matches, cat_names = _find_matches(
+        query,
         lambda: _cached(cache, "series_all", client.get_series_streams),
         lambda: _cached(cache, "series_categories", client.get_series_categories),
         lambda s: s.name,
-        lambda s: s.category_id,
-        "Select series (space to toggle, enter to confirm):",
+        "Searching series...",
+    )
+    if not matches:
+        console.print(f"[yellow]No results matching '{query}'.[/yellow]")
+        return []
+
+    # Same series often appears more than once — once per upstream provider —
+    # and one copy can be missing a season the other has. Season/episode
+    # counts make that visible before downloading, not after.
+    info_by_id = _fetch_series_info_with_progress(client, matches)
+
+    choices = []
+    for s in matches:
+        label = f"{s.name}  [{cat_names.get(s.category_id, s.category_id)}]"
+        info = info_by_id.get(s.series_id)
+        if info is not None:
+            n_seasons = len(info.episodes)
+            n_episodes = sum(len(eps) for eps in info.episodes.values())
+            label += f"  ({n_seasons} season(s), {n_episodes} episode(s))"
+            if detect_gaps_in_series(info):
+                label += "  [gaps]"
+        else:
+            label += "  (season info unavailable)"
+        choices.append(questionary.Choice(title=label, value=s))
+
+    selected: list[SeriesStream] = (
+        questionary.checkbox(
+            "Select series (space to toggle, enter to confirm):", choices=choices
+        ).ask()
+        or []
     )
     specs: list[JobSpec] = []
     for series_stream in selected:
-        specs.extend(_pick_series_scope(client, series_stream))
+        specs.extend(_pick_series_scope(client, series_stream, info_by_id.get(series_stream.series_id)))
     return specs
+
+
+def _fetch_series_info_with_progress(
+    client: XtreamClient, matches: list[SeriesStream]
+) -> dict[int, SeriesInfo | None]:
+    results: dict[int, SeriesInfo | None] = {}
+    with console.status(f"Fetching season info for {len(matches)} series...") as status:
+        for i, s in enumerate(matches, start=1):
+            status.update(f"Fetching season info for series {i}/{len(matches)}...")
+            try:
+                results[s.series_id] = client.get_series_info(s.series_id)
+            except XcVodDlError:
+                results[s.series_id] = None
+    return results
 
 
 def _browse_movies_by_category(client: XtreamClient) -> list[JobSpec]:
@@ -179,8 +229,15 @@ def _browse_series_by_category(client: XtreamClient) -> list[JobSpec]:
     return _pick_series_scope(client, series_stream)
 
 
-def _pick_series_scope(client: XtreamClient, series_stream: SeriesStream) -> list[JobSpec]:
-    info = client.get_series_info(series_stream.series_id)
+def _pick_series_scope(
+    client: XtreamClient, series_stream: SeriesStream, info: SeriesInfo | None = None
+) -> list[JobSpec]:
+    if info is None:
+        try:
+            info = client.get_series_info(series_stream.series_id)
+        except XcVodDlError as exc:
+            console.print(f"[red]Could not load '{series_stream.name}': {exc}[/red]")
+            return []
     gap_map = detect_gaps_in_series(info)
     if gap_map:
         console.print(f"[yellow]{format_gap_report(info.name, gap_map)}[/yellow]")

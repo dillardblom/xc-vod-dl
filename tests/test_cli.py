@@ -148,6 +148,52 @@ def test_fetch_series_season_end_to_end(xtream_server, monkeypatch, tmp_path):
         assert (Path("Series") / "Example Series" / "tvshow.nfo").exists()
 
 
+def test_fetch_series_disambiguates_colliding_episode_targets(xtream_server, monkeypatch, tmp_path):
+    """Real-world regression: an upstream source returned two distinct episode
+    ids both claiming season 1 episode 8 with the same title text (sloppy
+    metadata on their end). Both must still land on disk under distinct
+    filenames instead of racing to write the same .voddl file."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["series_info"]["6789"] = {
+        "seasons": [{"season_number": 1, "name": "Season 1", "episode_count": 1}],
+        "info": {"name": "Example Series"},
+        "episodes": {
+            "1": [
+                {
+                    "id": "9001",
+                    "episode_num": 8,
+                    "title": "Same Title",
+                    "container_extension": "mp4",
+                    "season": 1,
+                    "info": {},
+                },
+                {
+                    "id": "9002",
+                    "episode_num": 8,
+                    "title": "Same Title",
+                    "container_extension": "mp4",
+                    "season": 1,
+                    "info": {},
+                },
+            ]
+        },
+    }
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("manifest.txt").write_text("series:6789\n")
+        result = runner.invoke(main, ["fetch", "-f", "manifest.txt", "-y", "--serial"])
+
+        assert result.exit_code == 0, result.output
+        assert "2 succeeded" in result.output
+        season_dir = Path("Series") / "Example Series" / "Season 01"
+        files = sorted(p.name for p in season_dir.glob("*.mp4"))
+        assert len(files) == 2
+        assert "Example Series - S01E08 - Same Title.mp4" in files
+        assert any("[9002]" in f for f in files)
+
+
 def test_fetch_declined_confirmation_does_not_download(xtream_server, monkeypatch, tmp_path):
     base_url, state = xtream_server
     _set_env(monkeypatch, base_url)

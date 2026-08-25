@@ -134,6 +134,7 @@ def _resolve_series(
 
     jobs: list[DownloadJob] = []
     writers: list[Callable[[], None]] = [write_series_metadata]
+    seen_targets: set[Path] = set()
 
     for season_num in sorted(series.episodes):
         if season is not None and season_num != season:
@@ -142,14 +143,23 @@ def _resolve_series(
             if episode is not None and ep.episode_num != episode:
                 continue
             target = _episode_target(config, series.name, ep)
+            if target in seen_targets:
+                # Two distinct episodes landed on the same season+episode_num+title
+                # (seen in the wild: sloppy upstream metadata mislabeling one
+                # episode's title as another's). Disambiguate by episode_id
+                # rather than let two parallel downloads race to write the
+                # same .voddl file.
+                target = target.with_stem(f"{target.stem} [{ep.episode_id}]")
+            seen_targets.add(target)
             url = client.episode_url(ep.episode_id, ep.container_extension)
+            ep_tag = f"S{ep.season:02d}E{ep.episode_num:02d}"
             jobs.append(
                 DownloadJob(
                     id=f"episode:{ep.episode_id}",
                     url=url,
                     target_path=target,
                     kind="episode",
-                    title=ep.title or f"{series.name} S{ep.season:02d}E{ep.episode_num:02d}",
+                    title=f"{ep_tag} - {ep.title}" if ep.title else f"{series.name} {ep_tag}",
                     series_id=str(series_id),
                     season=ep.season,
                     episode_num=ep.episode_num,

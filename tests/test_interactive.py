@@ -279,7 +279,7 @@ def test_search_series_selects_whole_series_scope(monkeypatch):
 
     _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
     _text_sequence(monkeypatch, ["example"])
-    _checkbox_once(monkeypatch, ["Example Series  [Sci-Fi]"])
+    _checkbox_once(monkeypatch, ["Example Series  [Sci-Fi]  (1 season(s), 1 episode(s))"])
 
     specs = interactive_module.browse_and_select(client)
 
@@ -311,8 +311,84 @@ def test_search_series_prompts_scope_per_selected_series(monkeypatch):
         ["Series", "Search by name", "Whole series", "Whole series", "Done"],
     )
     _text_sequence(monkeypatch, ["alpha"])
-    _checkbox_once(monkeypatch, ["Alpha Show  [Sci-Fi]", "Alpha Two  [Sci-Fi]"])
+    _checkbox_once(
+        monkeypatch,
+        [
+            "Alpha Show  [Sci-Fi]  (1 season(s), 1 episode(s))",
+            "Alpha Two  [Sci-Fi]  (1 season(s), 1 episode(s))",
+        ],
+    )
 
     specs = interactive_module.browse_and_select(client)
 
     assert specs == [JobSpec(kind="series", id=1), JobSpec(kind="series", id=2)]
+
+
+def test_search_series_reuses_prefetched_info_no_double_fetch(monkeypatch):
+    """The season/episode enrichment fetch during search must be reused when
+    the user then picks a scope for that series — not fetched again."""
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="Example Series", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="Example Series",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "Pilot", "mkv")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
+    _text_sequence(monkeypatch, ["example"])
+    _checkbox_once(monkeypatch, ["Example Series  [Sci-Fi]  (1 season(s), 1 episode(s))"])
+
+    interactive_module.browse_and_select(client)
+
+    client.get_series_info.assert_called_once_with(6789)
+
+
+def test_search_series_label_shows_gap_marker(monkeypatch):
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="Gappy Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="Gappy Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "E1", "mkv"), Episode(9003, 1, 3, "E3", "mkv")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
+    _text_sequence(monkeypatch, ["gappy"])
+    _checkbox_once(monkeypatch, ["Gappy Show  [Sci-Fi]  (1 season(s), 2 episode(s))  [gaps]"])
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == [JobSpec(kind="series", id=6789)]
+
+
+def test_search_series_handles_info_fetch_failure_gracefully(monkeypatch):
+    """A series whose enrichment fetch failed can still be selected — picking
+    it must not crash the session, just report and skip it (matching the
+    original get_series_info call failing again on retry, since info=None)."""
+    from xc_vod_dl.exceptions import XtreamAPIError
+
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="Broken Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.side_effect = XtreamAPIError("boom")
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["broken"])
+    _checkbox_once(monkeypatch, ["Broken Show  [Sci-Fi]  (season info unavailable)"])
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == []
