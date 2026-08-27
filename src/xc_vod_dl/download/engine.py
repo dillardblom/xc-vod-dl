@@ -173,9 +173,20 @@ class DownloadEngine:
         job: DownloadJob,
         progress_cb: ProgressCallback | None = None,
         total_cb: Callable[[int], None] | None = None,
+        start_cb: Callable[[], None] | None = None,
+        complete_cb: Callable[[bool], None] | None = None,
     ) -> bool:
         """Returns True if the job ends up done (already-existing files count),
-        False if every attempt was exhausted without producing a verified file."""
+        False if every attempt was exhausted without producing a verified file.
+
+        `start_cb`, if given, fires exactly once, right as the actual transfer
+        begins — not when the job is merely queued behind others (serially or
+        behind the concurrency ceiling). Progress UI hangs off this rather
+        than the moment the job was handed to the engine, so a queued item's
+        indeterminate-progress "pulse" and elapsed-time clock only start once
+        it's really downloading. `complete_cb`, if given, fires exactly once
+        at the end with the final success/failure outcome.
+        """
         if job.target_path.exists():
             self.state.upsert_pending(
                 id=job.id,
@@ -188,6 +199,11 @@ class DownloadEngine:
                 container_extension=job.container_extension,
             )
             self.state.mark_status(job.id, "done")
+            logger.info("%s already complete: %s", job.id, job.title)
+            if start_cb:
+                start_cb()
+            if complete_cb:
+                complete_cb(True)
             return True
 
         self.state.upsert_pending(
@@ -209,6 +225,11 @@ class DownloadEngine:
             if progress_cb:
                 progress_cb(n)
 
+        if start_cb:
+            start_cb()
+        logger.info("starting download: %s (%s)", job.id, job.title)
+
+        ok = False
         for attempt in range(1, self.max_attempts + 1):
             self.state.mark_status(job.id, "downloading", increment_attempts=True)
             if self.controller is not None:
@@ -227,7 +248,7 @@ class DownloadEngine:
                     self.controller.report_outcome(job.id, _KIND_TO_OUTCOME[exc.kind])
                 self.state.mark_status(job.id, "failed", last_error=str(exc))
                 if attempt == self.max_attempts:
-                    return False
+                    break
                 continue  # tmp_path (if any bytes landed) persists on disk for the next attempt to resume
             else:
                 if self.controller is not None:
@@ -249,7 +270,8 @@ class DownloadEngine:
                 job.target_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(tmp_path, job.target_path)
                 self.state.mark_status(job.id, "done", bytes_downloaded=bytes_on_disk)
-                return True
+                ok = True
+                break
 
             # A file that fails verification can't be trusted as a resume base —
             # purge it and retry with a clean download, rather than the old
@@ -259,9 +281,12 @@ class DownloadEngine:
                 job.id, "failed", last_error=f"verification failed: {result.reason}"
             )
             if attempt == self.max_attempts:
-                return False
+                break
 
-        return False
+        logger.info("finished download: %s -> %s", job.id, "done" if ok else "failed")
+        if complete_cb:
+            complete_cb(ok)
+        return ok
 
 
 def run_many(
@@ -277,6 +302,8 @@ def run_many(
     chunk_size: int = 1 << 16,
     progress_cb: Callable[[str, int], None] | None = None,
     total_cb: Callable[[str, int], None] | None = None,
+    start_cb: Callable[[str, str], None] | None = None,
+    complete_cb: Callable[[str, bool], None] | None = None,
 ) -> dict[str, bool]:
     """Run `jobs` through `controller`'s dynamically-sized pool.
 
@@ -303,7 +330,11 @@ def run_many(
         )
         cb = (lambda n, jid=job.id: progress_cb(jid, n)) if progress_cb else None
         total = (lambda n, jid=job.id: total_cb(jid, n)) if total_cb else None
-        return job.id, engine.run(job, progress_cb=cb, total_cb=total)
+        start = (lambda jid=job.id, title=job.title: start_cb(jid, title)) if start_cb else None
+        complete = (lambda ok, jid=job.id: complete_cb(jid, ok)) if complete_cb else None
+        return job.id, engine.run(
+            job, progress_cb=cb, total_cb=total, start_cb=start, complete_cb=complete
+        )
 
     results: dict[str, bool] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=controller.maximum) as pool:

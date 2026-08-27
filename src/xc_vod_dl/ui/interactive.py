@@ -244,12 +244,23 @@ def _pick_series_scope(
 
     scope = questionary.select(
         f"Download from '{info.name}':",
-        choices=["Whole series", "A specific season", "A specific episode"],
+        choices=["Whole series", "One or more seasons", "A specific episode"],
     ).ask()
     if scope is None:
         return []
     if scope == "Whole series":
         return [JobSpec(kind="series", id=series_stream.series_id)]
+
+    if scope == "One or more seasons":
+        season_choices = questionary.checkbox(
+            "Season(s):",
+            choices=[questionary.Choice(str(s), value=s) for s in sorted(info.episodes)],
+        ).ask()
+        if not season_choices:
+            return []
+        return [
+            JobSpec(kind="series", id=series_stream.series_id, season=s) for s in season_choices
+        ]
 
     season_num = questionary.select(
         "Season:", choices=[str(s) for s in sorted(info.episodes)]
@@ -257,8 +268,6 @@ def _pick_series_scope(
     if season_num is None:
         return []
     season_num = int(season_num)
-    if scope == "A specific season":
-        return [JobSpec(kind="series", id=series_stream.series_id, season=season_num)]
 
     episode_num = questionary.select(
         "Episode:",

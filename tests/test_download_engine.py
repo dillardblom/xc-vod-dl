@@ -146,6 +146,68 @@ def test_engine_run_skips_when_target_already_exists(media_server, tmp_path):
         assert state_store.get("movie:1").status == "done"
 
 
+def test_engine_run_skips_still_fires_start_and_complete_callbacks(media_server, tmp_path):
+    """An already-complete file should be reported as immediately complete
+    rather than left invisible to the progress UI."""
+    url, _state = media_server
+    target = tmp_path / "out.mp4"
+    target.write_bytes(b"already here")
+
+    starts = []
+    completions = []
+    with StateStore(":memory:") as state_store:
+        engine = DownloadEngine(requests.Session(), state_store)
+        job = DownloadJob(id="movie:1", url=url, target_path=target, kind="movie", title="Example")
+        ok = engine.run(
+            job, start_cb=lambda: starts.append(True), complete_cb=completions.append
+        )
+
+    assert ok is True
+    assert starts == [True]
+    assert completions == [True]
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
+def test_engine_run_calls_start_once_and_complete_true_on_success(media_server, tmp_path):
+    url, _state = media_server
+    target = tmp_path / "out.mp4"
+    job = DownloadJob(id="movie:1", url=url, target_path=target, kind="movie", title="Example")
+
+    starts = []
+    completions = []
+    with StateStore(":memory:") as state_store:
+        engine = DownloadEngine(requests.Session(), state_store, verify_mode="quick")
+        ok = engine.run(
+            job, start_cb=lambda: starts.append(True), complete_cb=completions.append
+        )
+
+    assert ok is True
+    assert starts == [True]  # once, not once per retry attempt
+    assert completions == [True]
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
+def test_engine_run_calls_start_once_and_complete_false_on_exhausted_failure(media_server, tmp_path):
+    url, state = media_server
+    state["data"] = b"not a real media file at all"
+    target = tmp_path / "out.mp4"
+    job = DownloadJob(id="movie:1", url=url, target_path=target, kind="movie", title="Example")
+
+    starts = []
+    completions = []
+    with StateStore(":memory:") as state_store:
+        engine = DownloadEngine(
+            requests.Session(), state_store, verify_mode="quick", max_attempts=2
+        )
+        ok = engine.run(
+            job, start_cb=lambda: starts.append(True), complete_cb=completions.append
+        )
+
+    assert ok is False
+    assert starts == [True]  # still exactly once despite two failed attempts
+    assert completions == [False]
+
+
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
 def test_engine_run_fails_after_exhausting_retries_on_bad_source(media_server, tmp_path):
     url, state = media_server

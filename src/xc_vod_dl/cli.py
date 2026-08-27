@@ -273,8 +273,6 @@ def _run_pipeline(
     reporter = None if quiet else ProgressReporter()
     if reporter is not None:
         with reporter:
-            for job in jobs:
-                reporter.register(job.id, job.title)
             return _run_jobs(
                 client, config, account, session, jobs, state, serial, parallel_override, verify_mode, reporter
             )
@@ -301,7 +299,11 @@ def _run_jobs(
         for job in jobs:
             cb = (lambda n, jid=job.id: reporter.report(jid, n)) if reporter else None
             total_cb = (lambda n, jid=job.id: reporter.set_total(jid, n)) if reporter else None
-            results[job.id] = engine.run(job, progress_cb=cb, total_cb=total_cb)
+            start_cb = (lambda jid=job.id, title=job.title: reporter.start(jid, title)) if reporter else None
+            complete_cb = (lambda ok, jid=job.id: reporter.complete(jid, ok)) if reporter else None
+            results[job.id] = engine.run(
+                job, progress_cb=cb, total_cb=total_cb, start_cb=start_cb, complete_cb=complete_cb
+            )
         return results
 
     initial = parallel_override or initial_parallelism(
@@ -325,6 +327,8 @@ def _run_jobs(
         verify_mode=verify_mode,
         progress_cb=reporter.report if reporter else None,
         total_cb=reporter.set_total if reporter else None,
+        start_cb=reporter.start if reporter else None,
+        complete_cb=reporter.complete if reporter else None,
     )
 
 

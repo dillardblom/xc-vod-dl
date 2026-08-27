@@ -171,6 +171,8 @@ def test_fetch_writes_logfile_with_timestamps(xtream_server, monkeypatch, tmp_pa
         assert content.strip()
         # timestamped, not just the bare console message
         assert content.splitlines()[0][:4].isdigit()  # starts with a year
+        assert "starting download: movie:101" in content
+        assert "finished download: movie:101 -> done" in content
 
 
 def test_fetch_series_season_end_to_end(xtream_server, monkeypatch, tmp_path):

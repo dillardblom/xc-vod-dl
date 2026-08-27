@@ -10,6 +10,16 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def isolated_xdg_config(monkeypatch, tmp_path_factory):
+    """Redirects the XDG config fallback to an empty per-test directory so
+    the suite never silently reads (or writes state.db paths pointed at by)
+    whatever real ~/.config/xc-vod-dl/config.toml happens to exist on the
+    machine running the tests — a config.toml a developer sets up for their
+    own real server should never change what the test suite does."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+
+
 @pytest.fixture
 def load_fixture():
     def _load(name: str):

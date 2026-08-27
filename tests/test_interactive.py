@@ -125,15 +125,44 @@ def test_browse_series_by_category_specific_season(monkeypatch):
             "Browse by category",
             "Sci-Fi",
             "Example Series",
-            "A specific season",
-            "2",
+            "One or more seasons",
             "Done",
         ],
     )
+    _checkbox_once(monkeypatch, ["2"])
 
     specs = interactive_module.browse_and_select(client)
 
     assert specs == [JobSpec(kind="series", id=6789, season=2)]
+
+
+def test_browse_series_by_category_multiple_seasons(monkeypatch):
+    client = _series_client(
+        {
+            1: [Episode(9001, 1, 1, "Pilot", "mkv")],
+            2: [Episode(9002, 2, 1, "S2E1", "mkv")],
+            3: [Episode(9003, 3, 1, "S3E1", "mkv")],
+        }
+    )
+    _select_sequence(
+        monkeypatch,
+        [
+            "Series",
+            "Browse by category",
+            "Sci-Fi",
+            "Example Series",
+            "One or more seasons",
+            "Done",
+        ],
+    )
+    _checkbox_once(monkeypatch, ["1", "3"])
+
+    specs = interactive_module.browse_and_select(client)
+
+    assert specs == [
+        JobSpec(kind="series", id=6789, season=1),
+        JobSpec(kind="series", id=6789, season=3),
+    ]
 
 
 def test_browse_series_by_category_specific_episode(monkeypatch):
