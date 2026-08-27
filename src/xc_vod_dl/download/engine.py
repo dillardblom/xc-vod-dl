@@ -67,8 +67,14 @@ def download_file(
     bytes as soon as it's known from the response's Content-Length header —
     servers don't always send one, so it may never fire.
     """
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-    resume_from = tmp_path.stat().st_size if tmp_path.exists() else 0
+    try:
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        resume_from = tmp_path.stat().st_size if tmp_path.exists() else 0
+    except OSError as exc:
+        # e.g. a network-mounted target directory (CIFS/NFS) that's gone
+        # unreachable — surfaces as a bare OSError ("Host is down" etc.),
+        # not a requests exception, so it needs its own conversion here.
+        raise DownloadError(f"local storage error preparing {tmp_path}: {exc}", kind="other") from exc
     headers = {"Range": f"bytes={resume_from}-"} if resume_from > 0 else {}
 
     try:
@@ -84,7 +90,12 @@ def download_file(
         # Server doesn't support (or ignored) range requests for this URL —
         # our partial can't be trusted as a prefix of this response.
         resp.close()
-        tmp_path.unlink(missing_ok=True)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise DownloadError(
+                f"local storage error removing stale partial {tmp_path}: {exc}", kind="other"
+            ) from exc
         return download_file(
             session,
             url,
@@ -136,6 +147,8 @@ def download_file(
         raise DownloadError(f"connection error streaming {url}: {exc}", kind="conn_reset") from exc
     except requests.RequestException as exc:
         raise DownloadError(f"stream interrupted for {url}: {exc}", kind="other") from exc
+    except OSError as exc:
+        raise DownloadError(f"local storage error writing {tmp_path}: {exc}", kind="other") from exc
     finally:
         resp.close()
 
@@ -267,8 +280,22 @@ class DownloadEngine:
             if result.ok:
                 if result.warning:
                     logger.info("verify warning for %s (accepted): %s", job.id, result.warning)
-                job.target_path.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(tmp_path, job.target_path)
+                try:
+                    job.target_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(tmp_path, job.target_path)
+                except OSError as exc:
+                    # Target directory (e.g. a CIFS/NFS share) went unreachable
+                    # between finishing the transfer and committing it — the
+                    # verified .voddl file is left in place for the next
+                    # attempt to pick straight back up rather than re-download.
+                    self.state.mark_status(
+                        job.id,
+                        "failed",
+                        last_error=f"local storage error finalizing {job.target_path}: {exc}",
+                    )
+                    if attempt == self.max_attempts:
+                        break
+                    continue
                 self.state.mark_status(job.id, "done", bytes_downloaded=bytes_on_disk)
                 ok = True
                 break
@@ -276,7 +303,17 @@ class DownloadEngine:
             # A file that fails verification can't be trusted as a resume base —
             # purge it and retry with a clean download, rather than the old
             # "just delete it and give up" behavior.
-            tmp_path.unlink(missing_ok=True)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError as exc:
+                self.state.mark_status(
+                    job.id,
+                    "failed",
+                    last_error=f"local storage error removing failed-verify file {tmp_path}: {exc}",
+                )
+                if attempt == self.max_attempts:
+                    break
+                continue
             self.state.mark_status(
                 job.id, "failed", last_error=f"verification failed: {result.reason}"
             )

@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -74,6 +75,30 @@ def test_download_file_raises_on_server_error(media_server, tmp_path):
     state["mode"] = "fail_503"
     target = tmp_path / "out.mp4"
     with pytest.raises(DownloadError):
+        download_file(requests.Session(), url, target)
+
+
+def test_download_file_converts_local_storage_error_preparing_target(media_server, tmp_path):
+    """A network-mounted target directory going unreachable (CIFS/NFS host
+    down) surfaces as a bare OSError, not a requests exception — it must be
+    converted to a DownloadError so the engine's normal retry/failure
+    handling applies instead of an unhandled crash."""
+    url, _state = media_server
+    target = tmp_path / "out.mp4"
+    with (
+        patch("pathlib.Path.mkdir", side_effect=OSError(112, "Host is down")),
+        pytest.raises(DownloadError, match="local storage error"),
+    ):
+        download_file(requests.Session(), url, target)
+
+
+def test_download_file_converts_local_storage_error_while_writing(media_server, tmp_path):
+    url, _state = media_server
+    target = tmp_path / "out.mp4"
+    with (
+        patch("pathlib.Path.open", side_effect=OSError(112, "Host is down")),
+        pytest.raises(DownloadError, match="local storage error"),
+    ):
         download_file(requests.Session(), url, target)
 
 
@@ -184,6 +209,30 @@ def test_engine_run_calls_start_once_and_complete_true_on_success(media_server, 
     assert ok is True
     assert starts == [True]  # once, not once per retry attempt
     assert completions == [True]
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
+def test_engine_run_survives_local_storage_error_finalizing_the_download(media_server, tmp_path):
+    """The transfer and verify succeed, but committing the file (mkdir +
+    os.replace onto the final, possibly network-mounted, target) fails with
+    an OSError — must be reported as a normal failed job, not crash the run."""
+    url, _state = media_server
+    target = tmp_path / "Movies" / "Example (2024)" / "Example (2024).mp4"
+    job = DownloadJob(id="movie:1", url=url, target_path=target, kind="movie", title="Example")
+
+    completions = []
+    with StateStore(":memory:") as state_store:
+        engine = DownloadEngine(
+            requests.Session(), state_store, verify_mode="quick", max_attempts=1
+        )
+        with patch("xc_vod_dl.download.engine.os.replace", side_effect=OSError(112, "Host is down")):
+            ok = engine.run(job, complete_cb=completions.append)
+        record = state_store.get("movie:1")
+
+    assert ok is False
+    assert completions == [False]
+    assert record.status == "failed"
+    assert "local storage error" in record.last_error
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not available on PATH")
