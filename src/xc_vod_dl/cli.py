@@ -348,6 +348,9 @@ def _run_jobs(
     "--parallel", "parallel_override", type=int, help="Force a specific parallel download count."
 )
 @click.option("--verify-mode", type=click.Choice(["quick", "full"]), help="Override verify mode.")
+@click.option(
+    "--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path."
+)
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
 @click.option("--quiet", is_flag=True, help="Only log warnings/errors.")
 def fetch(
@@ -359,6 +362,7 @@ def fetch(
     serial: bool,
     parallel_override: int | None,
     verify_mode: str | None,
+    state_db_override: Path | None,
     yes: bool,
     quiet: bool,
 ) -> None:
@@ -366,6 +370,7 @@ def fetch(
     config = _load_config_or_exit(config_path, server, username, password)
     _setup_logging(config, quiet)
     resolved_verify_mode = verify_mode or config.download.verify_mode
+    state_db_path = state_db_override or config.download.state_db
 
     try:
         specs = parse_manifest(manifest_file)
@@ -399,7 +404,7 @@ def fetch(
     for writer in metadata_writers:
         writer()
 
-    with StateStore(Path("state.db")) as state:
+    with StateStore(state_db_path) as state:
         results = _run_pipeline(
             client,
             config,
@@ -431,6 +436,9 @@ def fetch(
     "--parallel", "parallel_override", type=int, help="Force a specific parallel download count."
 )
 @click.option("--verify-mode", type=click.Choice(["quick", "full"]), help="Override verify mode.")
+@click.option(
+    "--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path."
+)
 def browse(
     server: str | None,
     username: str | None,
@@ -439,11 +447,13 @@ def browse(
     serial: bool,
     parallel_override: int | None,
     verify_mode: str | None,
+    state_db_override: Path | None,
 ) -> None:
     """Interactively browse and select movies/series to download."""
     config = _load_config_or_exit(config_path, server, username, password)
     _setup_logging(config, quiet=False)
     resolved_verify_mode = verify_mode or config.download.verify_mode
+    state_db_path = state_db_override or config.download.state_db
 
     client = XtreamClient(config.account.server, config.account.username, config.account.password)
     try:
@@ -471,7 +481,7 @@ def browse(
     for writer in metadata_writers:
         writer()
 
-    with StateStore(Path("state.db")) as state:
+    with StateStore(state_db_path) as state:
         results = _run_pipeline(
             client,
             config,
@@ -537,6 +547,9 @@ def gaps(
     "--parallel", "parallel_override", type=int, help="Force a specific parallel download count."
 )
 @click.option("--verify-mode", type=click.Choice(["quick", "full"]), help="Override verify mode.")
+@click.option(
+    "--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path."
+)
 @click.option("--quiet", is_flag=True, help="Only log warnings/errors.")
 def resume(
     server: str | None,
@@ -546,18 +559,19 @@ def resume(
     serial: bool,
     parallel_override: int | None,
     verify_mode: str | None,
+    state_db_override: Path | None,
     quiet: bool,
 ) -> None:
     """Retry pending/failed/in-progress items left over in state.db from a
     previous run, without re-browsing or re-querying the catalog."""
-    state_path = Path("state.db")
-    if not state_path.exists():
-        click.echo("no state.db found in the current directory — nothing to resume")
-        return
-
     config = _load_config_or_exit(config_path, server, username, password)
     _setup_logging(config, quiet)
     resolved_verify_mode = verify_mode or config.download.verify_mode
+    state_path = state_db_override or config.download.state_db
+    if not state_path.exists():
+        click.echo(f"no state.db found at {state_path} — nothing to resume")
+        return
+
     client = XtreamClient(config.account.server, config.account.username, config.account.password)
     session = requests.Session()
 

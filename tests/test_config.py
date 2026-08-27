@@ -83,6 +83,7 @@ password = "p"
 movies_dir = "Films"
 verify_mode = "full"
 download_cover = false
+state_db = "/local/state/xc-vod-dl/state.db"
 
 [concurrency]
 max_parallel_ceiling = 2
@@ -94,6 +95,7 @@ safety_margin = 0
     assert config.download.verify_mode == "full"
     assert config.download.download_cover is False
     assert config.download.download_nfo is True  # unset, keeps default
+    assert config.download.state_db == Path("/local/state/xc-vod-dl/state.db")
     assert config.concurrency.max_parallel_ceiling == 2
     assert config.concurrency.safety_margin == 0
     assert config.concurrency.cooldown_s == 30.0  # unset, keeps default
@@ -104,3 +106,4 @@ def test_load_config_missing_file_uses_defaults_when_credentials_supplied_otherw
     config = load_config(missing_path, server="https://example.com", username="u", password="p")
     assert config.account.server == "https://example.com"
     assert config.download.movies_dir == Path("Movies")
+    assert config.download.state_db == Path("state.db")

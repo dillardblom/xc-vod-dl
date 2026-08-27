@@ -20,6 +20,13 @@ download_cover = true
 
 logfile = "voddl.log"
 
+# SQLite state file used for resume. Keep this on a local disk — network
+# filesystems (CIFS/SMB, NFS) don't reliably support the file locking SQLite
+# needs, and will fail with "database is locked" even with a single process.
+# Fine to leave the media itself (movies_dir/series_dir) on a network share;
+# just point state_db somewhere local, e.g. "/home/you/.local/state/xc-vod-dl/state.db".
+state_db = "state.db"
+
 [concurrency]
 # Hard ceiling on parallel transfers, regardless of what the account reports.
 max_parallel_ceiling = 4

@@ -48,6 +48,7 @@ class DownloadConfig:
     download_nfo: bool = True
     download_cover: bool = True
     logfile: Path = Path("voddl.log")
+    state_db: Path = Path("state.db")
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ def load_config(
         download_nfo=raw_download.get("download_nfo", True),
         download_cover=raw_download.get("download_cover", True),
         logfile=Path(raw_download.get("logfile", "voddl.log")),
+        state_db=Path(raw_download.get("state_db", "state.db")),
     )
 
     raw_concurrency = raw.get("concurrency", {})

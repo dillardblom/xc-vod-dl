@@ -107,6 +107,46 @@ def test_fetch_movie_end_to_end(xtream_server, monkeypatch, tmp_path):
         assert "<title>Example Movie (2024)</title>" in nfo_path.read_text()
 
 
+def test_fetch_state_db_override_writes_outside_the_download_directory(
+    xtream_server, monkeypatch, tmp_path
+):
+    """--state-db lets the SQLite state file live on local disk even when the
+    download directory itself is on a network share (CIFS/NFS don't reliably
+    support the file locking SQLite needs, causing spurious "database is
+    locked" errors)."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["vod_info"]["101"] = {
+        "info": {"tmdb_id": 550, "name": "Example Movie", "releasedate": "2024-03-15"},
+        "movie_data": {
+            "stream_id": 101,
+            "name": "Example Movie (2024)",
+            "container_extension": "mp4",
+            "category_id": "1",
+        },
+    }
+    local_state_dir = tmp_path / "local-state"
+    local_state_dir.mkdir()
+    state_db_path = local_state_dir / "state.db"
+
+    runner = CliRunner()
+    download_dir = tmp_path / "download-dir"
+    download_dir.mkdir()
+    with runner.isolated_filesystem(temp_dir=download_dir):
+        Path("manifest.txt").write_text("movie:101\n")
+        result = runner.invoke(
+            main,
+            ["fetch", "-f", "manifest.txt", "-y", "--serial", "--state-db", str(state_db_path)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert not Path("state.db").exists()
+
+    assert state_db_path.exists()
+    with StateStore(state_db_path) as store:
+        assert store.get("movie:101").status == "done"
+
+
 def test_fetch_writes_logfile_with_timestamps(xtream_server, monkeypatch, tmp_path):
     """config.toml's `logfile` used to be defined but never actually wired up
     to real file logging — everything only went to the console, so there was

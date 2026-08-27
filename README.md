@@ -90,6 +90,23 @@ download completes, `ffprobe` (or `ffmpeg` in `full` mode) checks it's actually
 decodable before the file is atomically renamed to its final name — a
 "finished" download that's secretly corrupt never gets marked done.
 
+### Downloading to a network share
+
+The media files (`movies_dir`/`series_dir`) are fine on a network share
+(CIFS/SMB, NFS, ...). The SQLite `state.db` is not — network filesystems
+don't reliably support the file locking SQLite needs for resume tracking,
+and running from such a directory tends to fail immediately with
+`sqlite3.OperationalError: database is locked`, even with only one process
+involved. Point `state_db` in `config.toml` at a local path instead, e.g.:
+
+```toml
+[download]
+state_db = "/home/you/.local/state/xc-vod-dl/state.db"
+```
+
+or pass `--state-db /local/path/state.db` on the command line. The media
+itself can still live on the network share.
+
 ## Development
 
 ```bash
