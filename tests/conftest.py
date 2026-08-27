@@ -52,6 +52,11 @@ class ConfigurableHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if mode == "fail_500":
+            self.send_response(500)
+            self.end_headers()
+            return
+
         if mode == "flaky_once" and not state["flaky_triggered"]:
             state["flaky_triggered"] = True
             self.send_response(200)
@@ -77,6 +82,23 @@ class ConfigurableHandler(http.server.BaseHTTPRequestHandler):
         if mode != "ignore_range" and range_header:
             start = int(range_header.split("=")[1].split("-")[0])
             status = 206
+
+        if start >= total:
+            if mode == "flaky_500_at_eof":
+                # Real-world behavior seen against a live Xtream server: some
+                # backend workers answer an at-EOF resume with a bogus 500
+                # instead of 416, for the identical already-complete file.
+                self.send_response(500)
+                self.end_headers()
+                return
+            # Standard semantics: a Range request starting exactly at (or
+            # past) EOF — i.e. resuming a file that's already fully on disk
+            # but never got committed — comes back 416, not a 206 with zero
+            # bytes.
+            self.send_response(416)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         chunk = data[start:]
         self.send_response(status)

@@ -45,6 +45,35 @@ def tmp_path_for(final_path: Path) -> Path:
     return final_path.with_name(final_path.name + ".voddl")
 
 
+def _probe_total_size(
+    session: requests.Session, url: str, resume_from: int, timeout: float
+) -> int | None:
+    """Best-effort lookup of the resource's real total size via a tiny
+    Range request for its last known byte, used when a resume attempt gets
+    an unexpected status that might just mean "you already have it all" —
+    servers aren't consistent about signaling that (416 vs. a bogus 500 for
+    the identical request, seen against a real server). Returns None if the
+    total can't be determined this way, so the caller falls back to treating
+    the original error as a genuine failure."""
+    probe_start = max(0, resume_from - 1)
+    try:
+        resp = session.get(
+            url, headers={"Range": f"bytes={probe_start}-"}, stream=True, timeout=timeout
+        )
+    except requests.RequestException:
+        return None
+    try:
+        content_range = resp.headers.get("Content-Range")
+    finally:
+        resp.close()
+    if not content_range or "/" not in content_range:
+        return None
+    try:
+        return int(content_range.rsplit("/", 1)[1])
+    except ValueError:
+        return None
+
+
 def download_file(
     session: requests.Session,
     url: str,
@@ -106,6 +135,18 @@ def download_file(
             timeout=timeout,
         )
 
+    if resume_from > 0 and resp.status_code == 416:
+        # Standard HTTP semantics: our Range started exactly at (or past) the
+        # resource's end — a prior attempt already got every byte down but
+        # never made it to verify/commit (e.g. killed, or a local storage
+        # error, between finishing the stream and the rename). Nothing left
+        # to fetch; hand the existing bytes on disk to verify as-is. Real
+        # corruption/truncation is still caught there, not skipped here.
+        resp.close()
+        if total_cb is not None:
+            total_cb(resume_from)
+        return resume_from
+
     if resp.status_code in (503, 429):
         resp.close()
         raise DownloadError(f"throttled: HTTP {resp.status_code} for {url}", kind="throttle")
@@ -118,6 +159,18 @@ def download_file(
 
     if resp.status_code not in (200, 206):
         resp.close()
+        if resume_from > 0:
+            # Seen in the wild against a real server: the same "resume
+            # starting exactly at EOF" request is answered 416 by one
+            # backend worker and a bogus 500 by another, for the identical
+            # already-fully-downloaded file. Rather than special-case every
+            # status a flaky worker might invent, confirm directly whether
+            # what's already on disk is in fact everything, before giving up.
+            true_total = _probe_total_size(session, url, resume_from, timeout)
+            if true_total is not None and resume_from >= true_total:
+                if total_cb is not None:
+                    total_cb(true_total)
+                return resume_from
         raise DownloadError(f"unexpected HTTP {resp.status_code} for {url}", kind="other")
 
     mode = "ab" if resp.status_code == 206 else "wb"

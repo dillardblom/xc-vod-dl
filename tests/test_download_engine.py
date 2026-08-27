@@ -78,6 +78,54 @@ def test_download_file_raises_on_server_error(media_server, tmp_path):
         download_file(requests.Session(), url, target)
 
 
+def test_download_file_treats_416_at_eof_as_already_complete(media_server, tmp_path):
+    """A resume whose Range starts exactly at the resource's end — i.e. a
+    prior attempt already wrote every byte to the .voddl file but never got
+    to commit it — must be accepted as done, not fail. Real Xtream servers
+    respond 416 to this rather than a 206 with zero remaining bytes."""
+    url, state = media_server
+    target = tmp_path / "out.mp4"
+    target.write_bytes(state["data"])  # already fully on disk, just never committed
+
+    totals = []
+    n = download_file(requests.Session(), url, target, total_cb=totals.append)
+
+    assert n == len(state["data"])
+    assert target.read_bytes() == state["data"]  # untouched, not re-fetched
+    assert totals == [len(state["data"])]
+
+
+def test_download_file_treats_a_flaky_500_at_eof_as_already_complete_too(media_server, tmp_path):
+    """The 416 fix alone isn't enough: a real server was observed answering
+    the identical at-EOF resume with 416 from one backend worker and a bogus
+    500 from another, for the same fully-downloaded file. A resume must not
+    depend on which one happens to answer — it should verify the true size
+    directly and accept the file either way."""
+    url, state = media_server
+    state["mode"] = "flaky_500_at_eof"
+    target = tmp_path / "out.mp4"
+    target.write_bytes(state["data"])
+
+    totals = []
+    n = download_file(requests.Session(), url, target, total_cb=totals.append)
+
+    assert n == len(state["data"])
+    assert target.read_bytes() == state["data"]
+    assert totals == [len(state["data"])]
+
+
+def test_download_file_still_fails_a_genuine_500_on_a_fresh_download(media_server, tmp_path):
+    """The at-EOF-recovery fallback must not paper over a real server error
+    on a normal (non-resume) download — nothing is on disk yet, so there's
+    nothing it could possibly already have."""
+    url, state = media_server
+    state["mode"] = "fail_500"
+    target = tmp_path / "out.mp4"  # no existing partial: resume_from stays 0
+
+    with pytest.raises(DownloadError):
+        download_file(requests.Session(), url, target)
+
+
 def test_download_file_converts_local_storage_error_preparing_target(media_server, tmp_path):
     """A network-mounted target directory going unreachable (CIFS/NFS host
     down) surfaces as a bare OSError, not a requests exception — it must be
