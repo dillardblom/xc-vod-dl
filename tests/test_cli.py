@@ -467,6 +467,65 @@ def test_resume_retries_incomplete_items_without_a_manifest(xtream_server, monke
             assert store.get("movie:101").status == "done"
 
 
+def test_resume_requeues_a_done_record_whose_file_is_missing_here(xtream_server, monkeypatch, tmp_path):
+    """state.db can be shared across multiple download directories (e.g. an
+    absolute configured state_db). A "done" record from a *different*
+    directory must not make resume silently report "nothing to resume" here
+    when the file was never actually downloaded into this one."""
+    base_url, _state = xtream_server
+    _set_env(monkeypatch, base_url)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        target = Path("Movies") / "Example Movie (2024)" / "Example Movie (2024).mp4"
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(
+                id="movie:101",
+                kind="movie",
+                title="Example Movie (2024)",
+                target_path=str(target),
+                container_extension="mp4",
+            )
+            store.mark_status("movie:101", "done")  # done elsewhere; not actually here
+        assert not target.exists()
+
+        result = runner.invoke(main, ["resume", "--serial"])
+
+        assert result.exit_code == 0, result.output
+        assert "1 item(s) were marked done elsewhere but are missing here" in result.output
+        assert "1 succeeded" in result.output
+        assert target.exists()
+        with StateStore(Path("state.db")) as store:
+            assert store.get("movie:101").status == "done"
+
+
+def test_resume_leaves_a_genuinely_done_record_alone(xtream_server, monkeypatch, tmp_path):
+    base_url, _state = xtream_server
+    _set_env(monkeypatch, base_url)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        target = Path("Movies") / "Example Movie (2024)" / "Example Movie (2024).mp4"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"already really here")
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(
+                id="movie:101",
+                kind="movie",
+                title="Example Movie (2024)",
+                target_path=str(target),
+                container_extension="mp4",
+            )
+            store.mark_status("movie:101", "done")
+
+        result = runner.invoke(main, ["resume"])
+
+        assert result.exit_code == 0, result.output
+        assert "were marked done" not in result.output
+        assert "nothing to resume" in result.output
+        assert target.read_bytes() == b"already really here"  # untouched
+
+
 def test_resume_with_no_state_db_is_a_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
     monkeypatch.setenv("XCVODDL_USERNAME", "demo")
@@ -484,6 +543,7 @@ def test_resume_with_nothing_incomplete_is_a_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("x.mp4").write_bytes(b"already really here")  # genuinely done, not just claimed
         with StateStore(Path("state.db")) as store:
             store.upsert_pending(id="movie:1", kind="movie", title="x", target_path="x.mp4")
             store.mark_status("movie:1", "done")

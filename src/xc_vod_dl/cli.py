@@ -567,7 +567,18 @@ def resume(
     quiet: bool,
 ) -> None:
     """Retry pending/failed/in-progress items left over in state.db from a
-    previous run, without re-browsing or re-querying the catalog."""
+    previous run, without re-browsing or re-querying the catalog.
+
+    state.db can be shared across multiple download directories (e.g. a
+    `state_db` configured to an absolute, non-project-local path). A "done"
+    record made that way is only true for the directory it was fetched
+    into — if the same episode/movie was never actually downloaded *here*,
+    trusting the database alone would silently skip it. So every "done"
+    record is checked against this directory's disk before being excluded;
+    anything missing gets reset to pending and resumed like any other
+    incomplete item, rather than resume reporting "nothing to resume" while
+    files are actually missing.
+    """
     config = _load_config_or_exit(config_path, server, username, password)
     _setup_logging(config, quiet)
     resolved_verify_mode = verify_mode or config.download.verify_mode
@@ -580,6 +591,23 @@ def resume(
     session = requests.Session()
 
     with StateStore(state_path) as state:
+        stale_done = [r for r in state.list_by_status("done") if not Path(r.target_path).exists()]
+        for record in stale_done:
+            state.mark_status(
+                record.id,
+                "pending",
+                bytes_downloaded=0,
+                last_error="was marked done, but the file is missing in this directory",
+            )
+        if stale_done:
+            click.echo(
+                f"{len(stale_done)} item(s) were marked done elsewhere but are missing here — re-queuing"
+            )
+            logger.info(
+                "%d item(s) reset from done to pending: missing on disk here",
+                len(stale_done),
+            )
+
         incomplete = state.list_incomplete()
         if not incomplete:
             click.echo("nothing to resume")
