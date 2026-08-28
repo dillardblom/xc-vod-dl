@@ -1,3 +1,4 @@
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -649,6 +650,114 @@ def test_resume_leaves_a_genuinely_done_record_alone(xtream_server, monkeypatch,
         assert "were marked done" not in result.output
         assert "nothing to resume" in result.output
         assert target.read_bytes() == b"already really here"  # untouched
+
+
+def test_status_groups_records_by_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(id="movie:1", kind="movie", title="Movie One", target_path="a.mp4")
+            store.upsert_pending(id="movie:2", kind="movie", title="Movie Two", target_path="b.mp4")
+            store.mark_status("movie:2", "downloading")
+            store.upsert_pending(id="movie:3", kind="movie", title="Movie Three", target_path="c.mp4")
+            store.mark_status("movie:3", "failed", last_error="stream interrupted")
+            store.upsert_pending(id="movie:4", kind="movie", title="Movie Four", target_path="d.mp4")
+            store.mark_status("movie:4", "done")
+
+        result = runner.invoke(main, ["status"])
+
+        assert result.exit_code == 0, result.output
+        assert "downloading (1):" in result.output
+        assert "movie:2  Movie Two" in result.output
+        assert "pending (1):" in result.output
+        assert "movie:1  Movie One" in result.output
+        assert "failed (1):" in result.output
+        assert "movie:3  Movie Three  (stream interrupted)" in result.output
+        assert "done: 1 item(s)" in result.output
+        assert "Movie Four" not in result.output  # not listed individually without --all
+
+
+def test_status_with_all_lists_done_items_individually(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(id="movie:4", kind="movie", title="Movie Four", target_path="d.mp4")
+            store.mark_status("movie:4", "done")
+
+        result = runner.invoke(main, ["status", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "done (1):" in result.output
+        assert "movie:4  Movie Four" in result.output
+
+
+def test_status_filters_to_a_single_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(id="movie:1", kind="movie", title="Movie One", target_path="a.mp4")
+            store.upsert_pending(id="movie:4", kind="movie", title="Movie Four", target_path="d.mp4")
+            store.mark_status("movie:4", "done")
+
+        result = runner.invoke(main, ["status", "--status", "pending"])
+
+        assert result.exit_code == 0, result.output
+        assert "pending (1):" in result.output
+        assert "Movie One" in result.output
+        assert "Movie Four" not in result.output
+
+
+def test_status_json_output(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(id="movie:1", kind="movie", title="Movie One", target_path="a.mp4")
+
+        result = runner.invoke(main, ["status", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data == [
+            {
+                "id": "movie:1",
+                "kind": "movie",
+                "title": "Movie One",
+                "status": "pending",
+                "season": None,
+                "episode_num": None,
+                "bytes_downloaded": 0,
+                "attempts": 0,
+                "last_error": None,
+                "updated_at": data[0]["updated_at"],
+            }
+        ]
+
+
+def test_status_with_no_state_db_is_a_noop(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "no state.db found" in result.output
 
 
 def test_resume_with_no_state_db_is_a_noop(monkeypatch, tmp_path):

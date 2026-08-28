@@ -81,8 +81,14 @@ succeeded, `1` on partial/total failure — safe to use in scripts/cron.
 ```bash
 xc-vod-dl gaps --series-id 6789        # report missing episodes, no download
 xc-vod-dl resume                       # retry anything left pending/failed in state.db
+xc-vod-dl status                       # show what's pending/downloading/failed/done — no side effects
 xc-vod-dl clean                        # remove stray .voddl (unverified partial) files
 ```
+
+`status` groups everything currently tracked in `state.db` by status — exactly
+what a `resume` would act on, without actually running one. `done` items are
+summarized as a count by default (`--all` to list them individually), `--status
+<name>` filters to one group, and `--json` gives a machine-readable dump.
 
 `fetch`/`browse`/`resume` all accept `--serial` (force one-at-a-time),
 `--parallel N` (force a specific count), and `--verify-mode quick|full`

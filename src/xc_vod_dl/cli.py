@@ -682,6 +682,102 @@ def resume(
 
 
 @main.command()
+@click.option("--server", help="Overrides the configured server URL.")
+@click.option("--username", help="Overrides the configured username.")
+@click.option("--password", help="Overrides the configured password.")
+@click.option(
+    "--config", "config_path", type=click.Path(path_type=Path), help="Path to config.toml."
+)
+@click.option(
+    "--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path."
+)
+@click.option(
+    "--status",
+    "status_filter",
+    type=click.Choice(["pending", "downloading", "verifying", "failed", "done"]),
+    help="Only show items with this status.",
+)
+@click.option("--all", "show_all", is_flag=True, help="Also list every 'done' item, not just a count.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def status(
+    server: str | None,
+    username: str | None,
+    password: str | None,
+    config_path: Path | None,
+    state_db_override: Path | None,
+    status_filter: str | None,
+    show_all: bool,
+    as_json: bool,
+) -> None:
+    """Show what's tracked in state.db right now — pending, in progress,
+    failed, or done — without resuming or re-running anything. What
+    `resume` would act on is exactly the pending/downloading/verifying/
+    failed groups shown here."""
+    config = _load_config_or_exit(config_path, server, username, password)
+    state_path = state_db_override or config.download.state_db
+    if not state_path.exists():
+        click.echo(f"no state.db found at {state_path}")
+        return
+
+    with StateStore(state_path) as state:
+        records = state.list_by_status(status_filter) if status_filter else state.list_all()
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "id": r.id,
+                        "kind": r.kind,
+                        "title": r.title,
+                        "status": r.status,
+                        "season": r.season,
+                        "episode_num": r.episode_num,
+                        "bytes_downloaded": r.bytes_downloaded,
+                        "attempts": r.attempts,
+                        "last_error": r.last_error,
+                        "updated_at": r.updated_at,
+                    }
+                    for r in records
+                ]
+            )
+        )
+        return
+
+    if not records:
+        click.echo("nothing tracked in state.db")
+        return
+
+    if status_filter:
+        _print_status_group(status_filter, records)
+        return
+
+    by_status: dict[str, list] = {}
+    for r in records:
+        by_status.setdefault(r.status, []).append(r)
+
+    for name in ("downloading", "verifying", "pending", "failed"):
+        group = by_status.get(name, [])
+        if group:
+            _print_status_group(name, group)
+
+    done = by_status.get("done", [])
+    if show_all:
+        _print_status_group("done", done)
+    elif done:
+        click.echo(f"done: {len(done)} item(s)")
+
+
+def _print_status_group(status_name: str, records: list) -> None:
+    click.echo(f"{status_name} ({len(records)}):")
+    for r in records:
+        line = f"  {r.id}  {r.title}"
+        if r.status == "failed" and r.last_error:
+            line += f"  ({r.last_error})"
+        click.echo(line)
+
+
+@main.command()
 @click.option(
     "--path",
     "root",
