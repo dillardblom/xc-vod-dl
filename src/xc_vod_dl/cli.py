@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -17,7 +18,11 @@ from xc_vod_dl.config import Config, load_config
 from xc_vod_dl.download.concurrency import ConcurrencyController, initial_parallelism
 from xc_vod_dl.download.engine import DownloadEngine, DownloadJob, run_many
 from xc_vod_dl.exceptions import ConfigError, XcVodDlError
-from xc_vod_dl.gaps import detect_gaps_in_series, format_gap_report
+from xc_vod_dl.gaps import (
+    detect_duplicate_episodes_in_series,
+    detect_gaps_in_series,
+    format_gap_report,
+)
 from xc_vod_dl.jobs import JobSpec, parse_manifest
 from xc_vod_dl.nfo import build_episode_nfo, build_movie_nfo, build_series_nfo
 from xc_vod_dl.state.store import StateStore
@@ -104,9 +109,15 @@ def _download_cover(session: requests.Session, url: str, target_path: Path) -> N
 
 
 def _resolve_movie(
-    client: XtreamClient, config: Config, session: requests.Session, vod_id: int
+    client: XtreamClient,
+    config: Config,
+    session: requests.Session,
+    vod_id: int,
+    display_name: str | None = None,
 ) -> tuple[DownloadJob, Callable[[], None]]:
     vod = client.get_vod_info(vod_id)
+    if display_name:
+        vod = dataclasses.replace(vod, name=display_name)
     target = _movie_target(config, vod)
     url = client.movie_url(vod.stream_id, vod.container_extension)
     job = DownloadJob(
@@ -136,11 +147,15 @@ def _resolve_series(
     series_id: int,
     season: int | None,
     episode: int | None,
+    display_name: str | None = None,
 ) -> tuple[list[DownloadJob], list[Callable[[], None]]]:
     series = client.get_series_info(series_id)
+    if display_name:
+        series = dataclasses.replace(series, name=display_name)
     gap_map = detect_gaps_in_series(series)
-    if gap_map:
-        click.echo(format_gap_report(series.name, gap_map), err=True)
+    dupe_map = detect_duplicate_episodes_in_series(series)
+    if gap_map or dupe_map:
+        click.echo(format_gap_report(series.name, gap_map, dupe_map), err=True)
 
     series_dir = config.download.series_dir / _sanitize(series.name)
 
@@ -212,12 +227,14 @@ def _resolve_jobs(
     for spec in specs:
         try:
             if spec.kind == "movie":
-                job, writer = _resolve_movie(client, config, session, spec.id)
+                job, writer = _resolve_movie(
+                    client, config, session, spec.id, spec.display_name
+                )
                 jobs.append(job)
                 writers.append(writer)
             else:
                 new_jobs, new_writers = _resolve_series(
-                    client, config, session, spec.id, spec.season, spec.episode
+                    client, config, session, spec.id, spec.season, spec.episode, spec.display_name
                 )
                 jobs.extend(new_jobs)
                 writers.extend(new_writers)
@@ -532,11 +549,19 @@ def gaps(
         sys.exit(2)
 
     gap_map = detect_gaps_in_series(series)
+    dupe_map = detect_duplicate_episodes_in_series(series)
     if as_json:
-        click.echo(json.dumps({str(season): missing for season, missing in gap_map.items()}))
+        click.echo(
+            json.dumps(
+                {
+                    "gaps": {str(season): missing for season, missing in gap_map.items()},
+                    "duplicates": {str(season): repeated for season, repeated in dupe_map.items()},
+                }
+            )
+        )
     else:
-        click.echo(format_gap_report(series.name, gap_map))
-    sys.exit(0 if not gap_map else 1)
+        click.echo(format_gap_report(series.name, gap_map, dupe_map))
+    sys.exit(0 if not gap_map and not dupe_map else 1)
 
 
 @main.command()

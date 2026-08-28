@@ -7,9 +7,14 @@ import questionary
 from rich.console import Console
 
 from xc_vod_dl.api.client import XtreamClient
-from xc_vod_dl.api.models import Category, SeriesInfo, SeriesStream
+from xc_vod_dl.api.models import Category, SeriesInfo, SeriesStream, VodStream
 from xc_vod_dl.exceptions import XcVodDlError
-from xc_vod_dl.gaps import detect_gaps_in_series, format_gap_report
+from xc_vod_dl.gaps import (
+    detect_duplicate_episodes_in_series,
+    detect_gaps_across_series,
+    detect_gaps_in_series,
+    format_gap_report,
+)
 from xc_vod_dl.jobs import JobSpec
 
 console = Console()
@@ -47,6 +52,21 @@ def _cached(cache: dict[str, list], key: str, fetch: Callable[[], list]) -> list
     if key not in cache:
         cache[key] = fetch()
     return cache[key]
+
+
+def _prompt_rename(original_name: str) -> str | None:
+    """Optional post-selection rename. Most valuable for a series, where a
+    single upstream naming quirk (e.g. a leading language-code prefix) would
+    otherwise mean manually renaming every episode file and its .nfo one by
+    one after the fact. Returns the name to use for folders/filenames/.nfo
+    (unchanged if kept, or the typed replacement) — never None once
+    reached; a cancelled prompt (Ctrl-C/Esc) also falls back to the original.
+    """
+    keep = questionary.confirm(f"Keep name '{original_name}' as-is?", default=True).ask()
+    if keep is None or keep:
+        return original_name
+    new_name = questionary.text("New name:", default=original_name).ask()
+    return new_name if new_name else original_name
 
 
 def _pick_category(categories: list[Category]) -> Category | None:
@@ -129,7 +149,17 @@ def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     ).ask()
     if not selected:
         return []
-    return [JobSpec(kind="movie", id=s.stream_id) for s in selected]
+    return _movie_specs_with_rename(selected)
+
+
+def _movie_specs_with_rename(selected: list[VodStream]) -> list[JobSpec]:
+    specs = []
+    for s in selected:
+        name = _prompt_rename(s.name)
+        specs.append(
+            JobSpec(kind="movie", id=s.stream_id, display_name=name if name != s.name else None)
+        )
+    return specs
 
 
 def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec]:
@@ -153,6 +183,15 @@ def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     # counts make that visible before downloading, not after.
     info_by_id = _fetch_series_info_with_progress(client, matches)
 
+    # Duplicate-name results (different upstream providers) are exactly the
+    # case where you need to know *which* episode a copy is missing/repeats
+    # before picking one — not just that it has "[gaps]" somewhere — since
+    # the fix might be grabbing one specific episode from a different copy
+    # rather than the whole thing. Cross-checked against sibling listings
+    # where possible: a single listing can't tell "season ends at E51" from
+    # "E52 hasn't aired yet", but a sibling listing that does have E52 can.
+    cross_gap_by_id = _cross_series_gap_maps(matches, info_by_id)
+
     choices = []
     for s in matches:
         label = f"{s.name}  [{cat_names.get(s.category_id, s.category_id)}]"
@@ -161,8 +200,11 @@ def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
             n_seasons = len(info.episodes)
             n_episodes = sum(len(eps) for eps in info.episodes.values())
             label += f"  ({n_seasons} season(s), {n_episodes} episode(s))"
-            if detect_gaps_in_series(info):
-                label += "  [gaps]"
+            gap_map = cross_gap_by_id.get(s.series_id) or detect_gaps_in_series(info)
+            dupe_map = detect_duplicate_episodes_in_series(info)
+            if gap_map or dupe_map:
+                label += "  [gaps]" if gap_map else "  [duplicates]"
+                console.print(f"[yellow]{format_gap_report(label.strip(), gap_map, dupe_map)}[/yellow]")
         else:
             label += "  (season info unavailable)"
         choices.append(questionary.Choice(title=label, value=s))
@@ -175,7 +217,14 @@ def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     )
     specs: list[JobSpec] = []
     for series_stream in selected:
-        specs.extend(_pick_series_scope(client, series_stream, info_by_id.get(series_stream.series_id)))
+        specs.extend(
+            _pick_series_scope(
+                client,
+                series_stream,
+                info_by_id.get(series_stream.series_id),
+                cross_gap_by_id.get(series_stream.series_id),
+            )
+        )
     return specs
 
 
@@ -191,6 +240,34 @@ def _fetch_series_info_with_progress(
             except XcVodDlError:
                 results[s.series_id] = None
     return results
+
+
+def _cross_series_gap_maps(
+    matches: list[SeriesStream], info_by_id: dict[int, SeriesInfo | None]
+) -> dict[int, dict[int, list[int]]]:
+    """Groups search results by their exact set of season numbers (a cheap,
+    reliable proxy for "these are duplicate listings of the same show" —
+    confirmed against a real catalog: a show's main listings all share
+    {1, 2, 3} while an unrelated spin-off with only a season 1 naturally
+    falls into its own group of one, so it's never wrongly compared against
+    a completely different episode count) and cross-checks each member
+    against the others via detect_gaps_across_series()."""
+    groups: dict[frozenset[int], list[int]] = {}
+    for s in matches:
+        info = info_by_id.get(s.series_id)
+        if info is None or not info.episodes:
+            continue
+        groups.setdefault(frozenset(info.episodes), []).append(s.series_id)
+
+    result: dict[int, dict[int, list[int]]] = {}
+    for series_ids in groups.values():
+        if len(series_ids) < 2:
+            continue
+        infos = [info_by_id[sid] for sid in series_ids]
+        for sid, gap_map in zip(series_ids, detect_gaps_across_series(infos)):
+            if gap_map:
+                result[sid] = gap_map
+    return result
 
 
 def _browse_movies_by_category(client: XtreamClient) -> list[JobSpec]:
@@ -209,7 +286,7 @@ def _browse_movies_by_category(client: XtreamClient) -> list[JobSpec]:
     ).ask()
     if not selected:
         return []
-    return [JobSpec(kind="movie", id=s.stream_id) for s in selected]
+    return _movie_specs_with_rename(selected)
 
 
 def _browse_series_by_category(client: XtreamClient) -> list[JobSpec]:
@@ -230,7 +307,10 @@ def _browse_series_by_category(client: XtreamClient) -> list[JobSpec]:
 
 
 def _pick_series_scope(
-    client: XtreamClient, series_stream: SeriesStream, info: SeriesInfo | None = None
+    client: XtreamClient,
+    series_stream: SeriesStream,
+    info: SeriesInfo | None = None,
+    known_gap_map: dict[int, list[int]] | None = None,
 ) -> list[JobSpec]:
     if info is None:
         try:
@@ -238,18 +318,25 @@ def _pick_series_scope(
         except XcVodDlError as exc:
             console.print(f"[red]Could not load '{series_stream.name}': {exc}[/red]")
             return []
-    gap_map = detect_gaps_in_series(info)
-    if gap_map:
-        console.print(f"[yellow]{format_gap_report(info.name, gap_map)}[/yellow]")
+    # known_gap_map, when given, comes from cross-checking this listing
+    # against sibling search results and can see gaps a single listing
+    # can't (e.g. a missing trailing episode) — prefer it when available.
+    gap_map = known_gap_map or detect_gaps_in_series(info)
+    dupe_map = detect_duplicate_episodes_in_series(info)
+    if gap_map or dupe_map:
+        console.print(f"[yellow]{format_gap_report(info.name, gap_map, dupe_map)}[/yellow]")
+
+    name = _prompt_rename(info.name)
+    display_name = name if name != info.name else None
 
     scope = questionary.select(
-        f"Download from '{info.name}':",
+        f"Download from '{name}':",
         choices=["Whole series", "One or more seasons", "A specific episode"],
     ).ask()
     if scope is None:
         return []
     if scope == "Whole series":
-        return [JobSpec(kind="series", id=series_stream.series_id)]
+        return [JobSpec(kind="series", id=series_stream.series_id, display_name=display_name)]
 
     if scope == "One or more seasons":
         season_choices = questionary.checkbox(
@@ -259,7 +346,8 @@ def _pick_series_scope(
         if not season_choices:
             return []
         return [
-            JobSpec(kind="series", id=series_stream.series_id, season=s) for s in season_choices
+            JobSpec(kind="series", id=series_stream.series_id, season=s, display_name=display_name)
+            for s in season_choices
         ]
 
     season_num = questionary.select(
@@ -279,6 +367,10 @@ def _pick_series_scope(
         return []
     return [
         JobSpec(
-            kind="series", id=series_stream.series_id, season=season_num, episode=int(episode_num)
+            kind="series",
+            id=series_stream.series_id,
+            season=season_num,
+            episode=int(episode_num),
+            display_name=display_name,
         )
     ]

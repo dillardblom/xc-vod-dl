@@ -58,7 +58,19 @@ def _checkbox_once(monkeypatch, answer_titles):
 def _text_sequence(monkeypatch, answers):
     it = iter(answers)
     monkeypatch.setattr(
-        interactive_module.questionary, "text", lambda message: _FakeQuestion(next(it))
+        interactive_module.questionary,
+        "text",
+        lambda message, **kwargs: _FakeQuestion(next(it)),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_keep_name_as_is(monkeypatch):
+    """questionary.confirm now backs the optional post-selection rename
+    prompt — default every test to "keep the name as-is" so existing
+    end-to-end browse tests don't need to know about it."""
+    monkeypatch.setattr(
+        interactive_module.questionary, "confirm", lambda *args, **kwargs: _FakeQuestion(True)
     )
 
 
@@ -145,6 +157,98 @@ def test_fetch_state_db_override_writes_outside_the_download_directory(
     assert state_db_path.exists()
     with StateStore(state_db_path) as store:
         assert store.get("movie:101").status == "done"
+
+
+def test_resolve_movie_display_name_overrides_folder_and_nfo_title(xtream_server, monkeypatch, tmp_path):
+    """The interactive rename prompt only produces a JobSpec.display_name —
+    this checks the resolver actually honors it end to end, not just that
+    the interactive layer records the choice."""
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["vod_info"]["101"] = {
+        "info": {"name": "NL Example Movie", "releasedate": "2024-03-15"},
+        "movie_data": {
+            "stream_id": 101,
+            "name": "NL Example Movie",
+            "container_extension": "mp4",
+            "category_id": "1",
+        },
+    }
+
+    from xc_vod_dl.cli import _resolve_movie
+    from xc_vod_dl.config import Config, load_config
+
+    config: Config = load_config(server=base_url, username="demo", password="demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        import requests
+
+        from xc_vod_dl.api.client import XtreamClient
+
+        client = XtreamClient(base_url, "demo", "demo")
+        job, write_metadata = _resolve_movie(
+            client, config, requests.Session(), 101, "Example Movie"
+        )
+        write_metadata()
+
+        assert job.title == "Example Movie"
+        # _movie_target appends the release year since the renamed name
+        # doesn't already end in one.
+        target_dir = Path("Movies") / "Example Movie (2024)"
+        assert job.target_path == target_dir / "Example Movie (2024).mp4"
+        nfo = (target_dir / "Example Movie (2024).nfo").read_text()
+        assert "<title>Example Movie</title>" in nfo
+
+
+def test_resolve_series_display_name_overrides_dir_titles_and_episode_showtitle(
+    xtream_server, monkeypatch, tmp_path
+):
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["series_info"]["6789"] = {
+        "seasons": [{"season_number": 1, "name": "Season 1", "episode_count": 1}],
+        "info": {"name": "NL Example Series", "plot": "A series."},
+        "episodes": {
+            "1": [
+                {
+                    "id": "9001",
+                    "episode_num": 1,
+                    "title": "Pilot",
+                    "container_extension": "mkv",
+                    "season": 1,
+                    "info": {},
+                }
+            ]
+        },
+    }
+
+    from xc_vod_dl.cli import _resolve_series
+    from xc_vod_dl.config import Config, load_config
+
+    config: Config = load_config(server=base_url, username="demo", password="demo")
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        import requests
+
+        from xc_vod_dl.api.client import XtreamClient
+
+        client = XtreamClient(base_url, "demo", "demo")
+        jobs, writers = _resolve_series(
+            client, config, requests.Session(), 6789, None, None, "Example Series"
+        )
+        for writer in writers:
+            writer()
+
+        series_dir = Path("Series") / "Example Series"
+        assert jobs[0].target_path == series_dir / "Season 01" / "Example Series - S01E01 - Pilot.mkv"
+
+        tvshow_nfo = (series_dir / "tvshow.nfo").read_text()
+        assert "<title>Example Series</title>" in tvshow_nfo
+
+        episode_nfo = (series_dir / "Season 01" / "Example Series - S01E01 - Pilot.nfo").read_text()
+        assert "<showtitle>Example Series</showtitle>" in episode_nfo
 
 
 def test_fetch_writes_logfile_with_timestamps(xtream_server, monkeypatch, tmp_path):
@@ -329,7 +433,27 @@ def test_gaps_command_json_output(xtream_server, monkeypatch):
     }
     result = CliRunner().invoke(main, ["gaps", "--series-id", "6789", "--json"])
     assert result.exit_code == 0
-    assert result.output.strip() == "{}"
+    assert result.output.strip() == '{"gaps": {}, "duplicates": {}}'
+
+
+def test_gaps_command_reports_duplicate_episode(xtream_server, monkeypatch):
+    base_url, state = xtream_server
+    _set_env(monkeypatch, base_url)
+    state["series_info"]["6789"] = {
+        "seasons": [],
+        "info": {"name": "Example Series"},
+        "episodes": {
+            "1": [
+                {"id": "1", "episode_num": 1, "title": "E1", "container_extension": "mp4", "season": 1, "info": {}},
+                {"id": "2", "episode_num": 1, "title": "E1 dupe", "container_extension": "mp4", "season": 1, "info": {}},
+                {"id": "3", "episode_num": 2, "title": "E2", "container_extension": "mp4", "season": 1, "info": {}},
+            ]
+        },
+    }
+    result = CliRunner().invoke(main, ["gaps", "--series-id", "6789"])
+    assert result.exit_code == 1
+    assert "S01E01" in result.output
+    assert "duplicate" in result.output.lower()
 
 
 def test_browse_command_end_to_end(xtream_server, monkeypatch, tmp_path):

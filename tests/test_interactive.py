@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import pytest
 import questionary
 
 from xc_vod_dl.api.models import Category, Episode, SeriesInfo, SeriesStream, VodStream
@@ -13,6 +14,17 @@ class FakeQuestion:
 
     def ask(self):
         return self._answer
+
+
+@pytest.fixture(autouse=True)
+def _default_keep_name_as_is(monkeypatch):
+    """questionary.confirm now backs the optional post-selection rename
+    prompt — default every test to "keep the name as-is" so existing
+    selection-flow tests don't need to know about it. Tests that actually
+    exercise renaming override this locally via monkeypatch.setattr."""
+    monkeypatch.setattr(
+        interactive_module.questionary, "confirm", lambda *args, **kwargs: FakeQuestion(True)
+    )
 
 
 def _title_and_value(choice):
@@ -58,7 +70,18 @@ def _checkbox_once(monkeypatch, answer_titles):
 def _text_sequence(monkeypatch, answers):
     it = iter(answers)
     monkeypatch.setattr(
-        interactive_module.questionary, "text", lambda message: FakeQuestion(next(it))
+        interactive_module.questionary,
+        "text",
+        lambda message, **kwargs: FakeQuestion(next(it)),
+    )
+
+
+def _confirm_sequence(monkeypatch, answers):
+    it = iter(answers)
+    monkeypatch.setattr(
+        interactive_module.questionary,
+        "confirm",
+        lambda *args, **kwargs: FakeQuestion(next(it)),
     )
 
 
@@ -93,6 +116,25 @@ def test_browse_movies_by_category(monkeypatch):
     client.get_vod_streams.assert_called_once_with(category_id="1")
 
 
+def test_browse_movies_rename_prompt_overrides_display_name(monkeypatch):
+    client = MagicMock()
+    client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+    client.get_vod_streams.return_value = [
+        VodStream(
+            stream_id=101, name="NL ▎ Example Movie", category_id="1", container_extension="mkv"
+        )
+    ]
+
+    _select_sequence(monkeypatch, ["Movies", "Browse by category", "Action", "Done"])
+    _checkbox_once(monkeypatch, ["NL ▎ Example Movie"])
+    _confirm_sequence(monkeypatch, [False])
+    _text_sequence(monkeypatch, ["Example Movie"])
+
+    specs = interactive_module.browse_and_select(client)
+
+    assert specs == [JobSpec(kind="movie", id=101, display_name="Example Movie")]
+
+
 def test_browse_movies_no_categories_returns_empty(monkeypatch):
     client = MagicMock()
     client.get_vod_categories.return_value = []
@@ -108,6 +150,40 @@ def test_browse_series_by_category_whole_series(monkeypatch):
         monkeypatch,
         ["Series", "Browse by category", "Sci-Fi", "Example Series", "Whole series", "Done"],
     )
+
+    specs = interactive_module.browse_and_select(client)
+
+    assert specs == [JobSpec(kind="series", id=6789)]
+
+
+def test_browse_series_rename_prompt_applies_to_all_returned_specs(monkeypatch):
+    client = _series_client(
+        {1: [Episode(9001, 1, 1, "Pilot", "mkv")], 2: [Episode(9002, 2, 1, "S2E1", "mkv")]},
+        name="NL ▎ Example Series",
+    )
+    _select_sequence(
+        monkeypatch,
+        ["Series", "Browse by category", "Sci-Fi", "NL ▎ Example Series", "One or more seasons", "Done"],
+    )
+    _checkbox_once(monkeypatch, ["1", "2"])
+    _confirm_sequence(monkeypatch, [False])
+    _text_sequence(monkeypatch, ["Example Series"])
+
+    specs = interactive_module.browse_and_select(client)
+
+    assert specs == [
+        JobSpec(kind="series", id=6789, season=1, display_name="Example Series"),
+        JobSpec(kind="series", id=6789, season=2, display_name="Example Series"),
+    ]
+
+
+def test_browse_series_keeping_name_leaves_display_name_none(monkeypatch):
+    client = _series_client({1: [Episode(9001, 1, 1, "Pilot", "mkv")]})
+    _select_sequence(
+        monkeypatch,
+        ["Series", "Browse by category", "Sci-Fi", "Example Series", "Whole series", "Done"],
+    )
+    _confirm_sequence(monkeypatch, [True])  # keep as-is: no "New name:" prompt should fire
 
     specs = interactive_module.browse_and_select(client)
 
@@ -400,6 +476,104 @@ def test_search_series_label_shows_gap_marker(monkeypatch):
 
     specs = interactive_module.browse_and_select(client)
     assert specs == [JobSpec(kind="series", id=6789)]
+
+
+def test_search_series_prints_gap_detail_upfront(monkeypatch, capsys):
+    """Same-name duplicate series listings (different upstream providers) are
+    exactly the case where you need to know *which* episode a copy is
+    missing before picking one — the compact "[gaps]" marker alone doesn't
+    say that. The full report must be visible before the checkbox prompt,
+    not only after committing to a scope for one specific copy."""
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="Gappy Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="Gappy Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "E1", "mkv"), Episode(9003, 1, 3, "E3", "mkv")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["gappy"])
+    _checkbox_once(monkeypatch, [])  # nothing selected — just inspect what got printed
+
+    interactive_module.browse_and_select(client)
+
+    assert "S01E02" in capsys.readouterr().out
+
+
+def test_search_series_prints_duplicate_detail_upfront(monkeypatch, capsys):
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="Dupey Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="Dupey Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "E1", "mkv"), Episode(9002, 1, 1, "E1 dupe", "mkv")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["dupey"])
+    _checkbox_once(monkeypatch, [])
+
+    interactive_module.browse_and_select(client)
+
+    out = capsys.readouterr().out
+    assert "S01E01" in out
+    assert "duplicate" in out.lower()
+
+
+def test_search_series_cross_checks_duplicate_listings_for_trailing_gaps(monkeypatch, capsys):
+    """The real bug this closes: a listing whose season ends at E51 looks
+    complete on its own (detect_gaps_in_series can't tell that from "hasn't
+    aired yet"). Only comparing it against a sibling listing that has E52
+    reveals the gap — confirmed against a real "Bluey" catalog with exactly
+    this shape (EN/DUAL copies had S01 1-52, the NL copy only had 1-51)."""
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=1, name="Show A", category_id="3"),
+        SeriesStream(series_id=2, name="Show B", category_id="3"),
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Kids")]
+
+    def fake_series_info(series_id):
+        if series_id == 1:
+            episodes = {1: [Episode(9000 + n, 1, n, f"E{n}", "mkv") for n in range(1, 53)]}
+        else:
+            episodes = {1: [Episode(9100 + n, 1, n, f"E{n}", "mkv") for n in range(1, 52)]}
+        return SeriesInfo(
+            name="Show A" if series_id == 1 else "Show B",
+            plot="",
+            genre="",
+            tmdb_id=None,
+            seasons=[],
+            episodes=episodes,
+        )
+
+    client.get_series_info.side_effect = fake_series_info
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["show"])
+    _checkbox_once(monkeypatch, [])  # just inspect what got printed, don't select anything
+
+    interactive_module.browse_and_select(client)
+
+    out = capsys.readouterr().out
+    # Show A is complete (1-52) so it prints nothing; only Show B (1-51,
+    # missing E52 relative to its sibling) gets a report.
+    assert "Show A" not in out
+    assert "Show B" in out
+    assert "S01E52" in out
 
 
 def test_search_series_handles_info_fetch_failure_gracefully(monkeypatch):

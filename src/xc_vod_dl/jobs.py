@@ -22,6 +22,11 @@ class JobSpec:
     id: int
     season: int | None = None
     episode: int | None = None
+    # Overrides the upstream name for folder/filename/.nfo purposes — set
+    # interactively when the catalog's name isn't what you want on disk
+    # (e.g. a leading language-code prefix). None means use the name as
+    # fetched from the API.
+    display_name: str | None = None
 
 
 def parse_manifest_line(line: str) -> JobSpec | None:
