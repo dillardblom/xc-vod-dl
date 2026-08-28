@@ -5,9 +5,7 @@ import queue
 import threading
 from typing import Any
 
-import requests
-
-from xc_vod_dl.api.client import XtreamClient
+from xc_vod_dl.api.client import XtreamClient, new_session
 from xc_vod_dl.cli import _resolve_jobs, _run_jobs
 from xc_vod_dl.config import Config
 from xc_vod_dl.exceptions import XcVodDlError
@@ -36,7 +34,7 @@ class JobRunner:
         self.jobs: dict[str, dict[str, Any]] = {}
         self._bus = EventBus()
         self._queue: queue.Queue[list[JobSpec]] = queue.Queue()
-        self._session = requests.Session()
+        self._session = new_session()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 

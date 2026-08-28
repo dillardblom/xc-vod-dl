@@ -293,6 +293,7 @@ def test_search_movies_across_categories(monkeypatch):
         Category(category_id="1", category_name="Action"),
         Category(category_id="2", category_name="Horror"),
     ]
+    client.get_vod_info.return_value = MagicMock(duration=None)
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["wolf"])
@@ -327,6 +328,7 @@ def test_search_movies_label_includes_year_when_available(monkeypatch):
         )
     ]
     client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+    client.get_vod_info.return_value = MagicMock(duration=None)
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["old"])
@@ -334,6 +336,27 @@ def test_search_movies_label_includes_year_when_available(monkeypatch):
 
     specs = interactive_module.browse_and_select(client)
     assert specs == [JobSpec(kind="movie", id=101)]
+
+
+def test_search_movies_label_includes_duration_when_available(monkeypatch):
+    """Confirmed against real servers: get_vod_info()'s video/audio
+    sub-objects are never populated for movies, but duration sometimes is —
+    fetched the same way series search already pays for season/episode
+    counts, shown alongside format/year when present."""
+    client = MagicMock()
+    client.get_vod_streams.return_value = [
+        VodStream(stream_id=101, name="Long Movie", category_id="1", container_extension="mkv")
+    ]
+    client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+    client.get_vod_info.return_value = MagicMock(duration="01:51:00")
+
+    _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["long"])
+    _checkbox_once(monkeypatch, ["Long Movie  [Action]  (MKV, 01:51:00)"])
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == [JobSpec(kind="movie", id=101)]
+    client.get_vod_info.assert_called_once_with(101)
 
 
 def test_search_movies_empty_query_skips_fetch_entirely(monkeypatch):
@@ -355,6 +378,7 @@ def test_search_movies_is_case_insensitive(monkeypatch):
         VodStream(stream_id=101, name="WOLFS", category_id="1", container_extension="mp4")
     ]
     client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+    client.get_vod_info.return_value = MagicMock(duration=None)
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["wolf"])
@@ -370,6 +394,7 @@ def test_search_movies_caches_catalog_across_repeated_searches(monkeypatch):
         VodStream(stream_id=101, name="Wolfs", category_id="1", container_extension="mp4")
     ]
     client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+    client.get_vod_info.return_value = MagicMock(duration=None)
 
     _select_sequence(
         monkeypatch,

@@ -12,7 +12,7 @@ import click
 import requests
 
 from xc_vod_dl import __version__
-from xc_vod_dl.api.client import XtreamClient
+from xc_vod_dl.api.client import XtreamClient, new_session
 from xc_vod_dl.api.models import Episode, SeriesInfo, VodInfo
 from xc_vod_dl.config import Config, load_config
 from xc_vod_dl.download.concurrency import ConcurrencyController, initial_parallelism
@@ -338,7 +338,7 @@ def _run_jobs(
     )
     return run_many(
         jobs,
-        session_factory=requests.Session,
+        session_factory=new_session,
         state=state,
         controller=controller,
         verify_mode=verify_mode,
@@ -410,7 +410,7 @@ def fetch(
         click.echo(f"error: could not reach server: {exc}", err=True)
         sys.exit(2)
 
-    session = requests.Session()
+    session = new_session()
     jobs, metadata_writers = _resolve_jobs(client, config, session, specs)
 
     if not jobs:
@@ -488,7 +488,7 @@ def browse(
         click.echo("nothing selected")
         return
 
-    session = requests.Session()
+    session = new_session()
     jobs, metadata_writers = _resolve_jobs(client, config, session, specs)
     if not jobs:
         click.echo("nothing resolved to download", err=True)
@@ -613,7 +613,7 @@ def resume(
         return
 
     client = XtreamClient(config.account.server, config.account.username, config.account.password)
-    session = requests.Session()
+    session = new_session()
 
     with StateStore(state_path) as state:
         stale_done = [r for r in state.list_by_status("done") if not Path(r.target_path).exists()]

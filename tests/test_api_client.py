@@ -87,6 +87,25 @@ def test_get_vod_info(load_fixture):
     assert info.name == "Example Movie (2024)"
     assert info.tmdb_id == "550"
     assert info.container_extension == "mkv"
+    assert info.duration == "01:45:00"
+
+
+@responses.activate
+def test_get_vod_info_treats_zero_duration_as_absent():
+    """Seen in the wild on a real server: the duration field present but
+    "00:00:00" for one title in an otherwise fully populated catalog — not
+    meaningfully different from the field being absent."""
+    responses.add(
+        responses.GET,
+        f"{SERVER}/player_api.php",
+        json={
+            "info": {"name": "Example", "duration": "00:00:00"},
+            "movie_data": {"stream_id": 101, "container_extension": "mp4"},
+        },
+        status=200,
+    )
+    info = make_client().get_vod_info(101)
+    assert info.duration is None
 
 
 @responses.activate

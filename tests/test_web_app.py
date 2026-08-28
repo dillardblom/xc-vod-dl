@@ -51,6 +51,7 @@ def test_search_movies_matches_by_substring(xtream_server, tmp_path):
         "category": "Action",
         "container_extension": "mp4",
         "year": None,
+        "duration": None,
     }
 
 
@@ -71,6 +72,27 @@ def test_search_movies_includes_year_when_present(xtream_server, tmp_path):
     res = client.get("/api/movies/search", params={"q": "old"})
 
     assert res.json()[0]["year"] == "1999"
+
+
+def test_search_movies_includes_duration_when_present(xtream_server, tmp_path):
+    """Confirmed against real servers: get_vod_info()'s duration is
+    sometimes populated for movies (unlike video/audio, which never are) —
+    fetched per result the same way series search already pays for
+    season/episode counts."""
+    base_url, state = xtream_server
+    state["vod_categories"] = [{"category_id": "1", "category_name": "Action"}]
+    state["vod_streams"] = [
+        {"stream_id": 101, "name": "Long Movie", "category_id": "1", "container_extension": "mkv"},
+    ]
+    state["vod_info"]["101"] = {
+        "info": {"name": "Long Movie", "duration": "01:51:00"},
+        "movie_data": {"stream_id": 101, "name": "Long Movie", "container_extension": "mkv"},
+    }
+    client = _client(base_url, tmp_path)
+
+    res = client.get("/api/movies/search", params={"q": "long"})
+
+    assert res.json()[0]["duration"] == "01:51:00"
 
 
 def test_search_movies_empty_query_returns_nothing(xtream_server, tmp_path):

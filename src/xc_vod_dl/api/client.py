@@ -12,6 +12,24 @@ from xc_vod_dl.api.models import (
 )
 from xc_vod_dl.exceptions import AuthError, XtreamAPIError
 
+# requests' own default User-Agent ("python-requests/X.Y.Z") gets a bare TCP
+# reset on at least one real Xtream panel encountered in the wild — no HTTP
+# response at all, indistinguishable from the server being down until you
+# check with a browser-like UA instead. curl's default UA gets the same
+# treatment there. A browser UA was accepted by every panel tried (including
+# that one), so it's used everywhere this project opens a session, both for
+# player_api.php calls and media downloads.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def new_session() -> requests.Session:
+    session = requests.Session()
+    session.headers["User-Agent"] = DEFAULT_USER_AGENT
+    return session
+
 
 class XtreamClient:
     """Thin wrapper around an Xtream Codes `player_api.php` endpoint.
@@ -25,7 +43,7 @@ class XtreamClient:
         self.username = username
         self.password = password
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = new_session()
 
     def _get(self, params: dict | None = None) -> dict | list:
         base_params = {"username": self.username, "password": self.password}

@@ -112,12 +112,13 @@ function renderResults(data) {
     } else if (item.error) {
       meta += `  (${item.error})`;
     } else if (item.container_extension) {
-      // Movie: resolution/duration/audio-language aren't populated by every
-      // Xtream backend (confirmed empty for movies on a real server this
-      // was built against) — container format + year are the only fields
-      // reliably free of an extra per-item fetch.
+      // Movie: resolution/audio-language are never populated for movies on
+      // any real backend checked so far (only sometimes for series) —
+      // format + year are free, duration costs one get_vod_info() call per
+      // result but is worth it (populated on 2 of 3 real backends tested).
       let extra = item.container_extension.toUpperCase();
       if (item.year) extra += `, ${item.year}`;
+      if (item.duration) extra += `, ${item.duration}`;
       meta += `  (${extra})`;
     }
 

@@ -169,11 +169,18 @@ class VodInfo:
     stream_id: int
     container_extension: str
     cover: str | None = None
+    duration: str | None = None
 
     @classmethod
     def from_json(cls, data: dict) -> VodInfo:
         info = data.get("info") or {}
         movie_data = data.get("movie_data") or {}
+        # A server can send the *field* without a real value — "00:00:00"
+        # seen in the wild on a real server for one title in an otherwise
+        # populated catalog. Not meaningfully different from absent.
+        duration = info.get("duration") or None
+        if duration == "00:00:00":
+            duration = None
         return cls(
             name=movie_data.get("name", "") or info.get("name", "") or "",
             plot=info.get("plot", "") or info.get("description", "") or "",
@@ -183,4 +190,5 @@ class VodInfo:
             stream_id=_int(movie_data.get("stream_id")),
             container_extension=movie_data.get("container_extension") or "mp4",
             cover=info.get("movie_image") or info.get("cover_big") or None,
+            duration=duration,
         )

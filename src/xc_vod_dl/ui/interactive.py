@@ -138,8 +138,20 @@ def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
         console.print(f"[yellow]No results matching '{query}'.[/yellow]")
         return []
 
+    # Format/year are free (already in the streams listing). Duration needs
+    # a get_vod_info() call per result — checked against three real servers:
+    # always empty on one, populated on the other two — so it's fetched the
+    # same way series search already pays for season/episode counts, rather
+    # than skipped outright.
+    duration_by_id = _fetch_movie_duration_with_progress(client, matches)
+
     choices = [
-        questionary.Choice(title=_movie_label(s, cat_names.get(s.category_id, s.category_id)), value=s)
+        questionary.Choice(
+            title=_movie_label(
+                s, cat_names.get(s.category_id, s.category_id), duration_by_id.get(s.stream_id)
+            ),
+            value=s,
+        )
         for s in matches
     ]
     selected = questionary.checkbox(
@@ -150,19 +162,33 @@ def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     return _movie_specs_with_rename(selected)
 
 
-def _movie_label(s: VodStream, category: str | None = None) -> str:
-    """Format/year are cheap — already in the streams listing, no extra
-    fetch. Resolution/duration/audio-language would need a get_vod_info()
-    call per result and, checked against a real server, are never actually
-    populated for movies there (only sometimes for series/episodes) — not
-    worth the added search latency until a server that does populate them
-    is the common case."""
+def _fetch_movie_duration_with_progress(
+    client: XtreamClient, matches: list[VodStream]
+) -> dict[int, str | None]:
+    results: dict[int, str | None] = {}
+    with console.status(f"Fetching details for {len(matches)} movie(s)...") as status:
+        for i, s in enumerate(matches, start=1):
+            status.update(f"Fetching details for movie {i}/{len(matches)}...")
+            try:
+                results[s.stream_id] = client.get_vod_info(s.stream_id).duration
+            except XcVodDlError:
+                results[s.stream_id] = None
+    return results
+
+
+def _movie_label(s: VodStream, category: str | None = None, duration: str | None = None) -> str:
+    """Resolution/audio-language aren't in the picture: checked against three
+    real servers, the video/audio sub-objects are never populated for movies
+    on any of them (only sometimes for series/episodes) — not worth fetching
+    for something that's never actually there. Duration is, on two of three."""
     label = s.name
     if category:
         label += f"  [{category}]"
     extra = s.container_extension.upper()
     if s.year:
         extra += f", {s.year}"
+    if duration:
+        extra += f", {duration}"
     return f"{label}  ({extra})"
 
 

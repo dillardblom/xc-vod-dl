@@ -55,17 +55,26 @@ def create_app(config: Config) -> FastAPI:
             return []
         categories = {c.category_id: c.category_name for c in client.get_vod_categories()}
         q_lower = q.lower()
-        return [
-            {
-                "id": s.stream_id,
-                "name": s.name,
-                "category": categories.get(s.category_id, s.category_id),
-                "container_extension": s.container_extension,
-                "year": s.year,
-            }
-            for s in client.get_vod_streams()
-            if q_lower in s.name.lower()
-        ][:40]
+        matches = [s for s in client.get_vod_streams() if q_lower in s.name.lower()][:40]
+
+        results = []
+        for s in matches:
+            duration = None
+            try:
+                duration = client.get_vod_info(s.stream_id).duration
+            except XcVodDlError:
+                pass
+            results.append(
+                {
+                    "id": s.stream_id,
+                    "name": s.name,
+                    "category": categories.get(s.category_id, s.category_id),
+                    "container_extension": s.container_extension,
+                    "year": s.year,
+                    "duration": duration,
+                }
+            )
+        return results
 
     @app.get("/api/series/search")
     def search_series(q: str) -> list[dict[str, Any]]:
