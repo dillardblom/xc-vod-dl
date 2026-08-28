@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>xc-vod-dl</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  .tabs { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  .tabs button { padding: .4rem .9rem; border: 1px solid #8884; border-radius: 6px; background: transparent; cursor: pointer; }
+  .tabs button.active { background: #4a90e2; color: white; border-color: #4a90e2; }
+  .search-row { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  .search-row input[type=text] { flex: 1; padding: .5rem; }
+  .search-row button { padding: .5rem 1rem; }
+  .result { border: 1px solid #8884; border-radius: 8px; padding: .6rem .8rem; margin-bottom: .5rem; }
+  .result-head { display: flex; align-items: center; gap: .6rem; }
+  .result-head input[type=checkbox] { transform: scale(1.2); }
+  .result-name { font-weight: 600; }
+  .result-meta { opacity: .7; font-size: .85rem; }
+  .rename { width: 100%; margin-top: .4rem; padding: .3rem; display: none; }
+  .result.selected .rename { display: block; }
+  .gap-report { white-space: pre-wrap; font-size: .8rem; margin-top: .4rem; padding: .4rem .6rem; border-radius: 6px; background: #f5a62333; }
+  .gap-report.dupe-only { background: #4a90e233; }
+  .actions { margin: 1rem 0; }
+  .actions button { padding: .6rem 1.2rem; font-weight: 600; }
+  #jobs { margin-top: 2rem; }
+  .job { border: 1px solid #8884; border-radius: 8px; padding: .5rem .8rem; margin-bottom: .4rem; }
+  .job-title { font-weight: 600; font-size: .9rem; }
+  .job-bar-track { background: #8882; border-radius: 4px; height: 10px; margin-top: .4rem; overflow: hidden; }
+  .job-bar-fill { background: #4a90e2; height: 100%; width: 0%; transition: width .3s; }
+  .job-bar-fill.done { background: #2ecc71; }
+  .job-bar-fill.failed { background: #e74c3c; }
+  .job-meta { font-size: .78rem; opacity: .7; margin-top: .2rem; }
+  .empty { opacity: .6; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>xc-vod-dl</h1>
+
+<div class="tabs">
+  <button id="tab-movies" class="active">Movies</button>
+  <button id="tab-series">Series</button>
+</div>
+
+<div class="search-row">
+  <input type="text" id="query" placeholder="Search...">
+  <button id="search-btn">Search</button>
+</div>
+
+<div id="results"></div>
+
+<div class="actions">
+  <button id="download-btn" disabled>Download selected</button>
+</div>
+
+<div id="jobs">
+  <h2>Downloads</h2>
+  <div id="jobs-list" class="empty">Nothing running yet.</div>
+</div>
+
+<script>
+let kind = "movie";
+let lastResults = [];
+
+document.getElementById("tab-movies").onclick = () => switchTab("movie");
+document.getElementById("tab-series").onclick = () => switchTab("series");
+
+function switchTab(k) {
+  kind = k;
+  document.getElementById("tab-movies").classList.toggle("active", k === "movie");
+  document.getElementById("tab-series").classList.toggle("active", k === "series");
+  document.getElementById("results").innerHTML = "";
+  updateDownloadButton();
+}
+
+document.getElementById("search-btn").onclick = doSearch;
+document.getElementById("query").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doSearch();
+});
+
+async function doSearch() {
+  const q = document.getElementById("query").value.trim();
+  const resultsEl = document.getElementById("results");
+  if (!q) { resultsEl.innerHTML = ""; return; }
+  resultsEl.innerHTML = '<div class="empty">Searching...</div>';
+  const path = kind === "movie" ? "/api/movies/search" : "/api/series/search";
+  const res = await fetch(`${path}?q=${encodeURIComponent(q)}`);
+  const data = await res.json();
+  lastResults = data;
+  renderResults(data);
+}
+
+function renderResults(data) {
+  const resultsEl = document.getElementById("results");
+  if (data.length === 0) {
+    resultsEl.innerHTML = '<div class="empty">No results.</div>';
+    return;
+  }
+  resultsEl.innerHTML = "";
+  for (const item of data) {
+    const div = document.createElement("div");
+    div.className = "result";
+    div.dataset.id = item.id;
+
+    let meta = item.category || "";
+    if (item.seasons) {
+      const episodeCount = item.episode_count ?? "?";
+      meta += `  (${item.seasons.length} season(s), ${episodeCount} episode(s))`;
+    } else if (item.error) {
+      meta += `  (${item.error})`;
+    }
+
+    div.innerHTML = `
+      <div class="result-head">
+        <input type="checkbox">
+        <span class="result-name">${escapeHtml(item.name)}</span>
+        <span class="result-meta">${escapeHtml(meta)}</span>
+      </div>
+      <input type="text" class="rename" placeholder="Rename (optional) — leave as-is to keep original" value="">
+      ${item.report ? `<div class="gap-report${item.gaps && Object.keys(item.gaps).length ? "" : " dupe-only"}">${escapeHtml(item.report)}</div>` : ""}
+    `;
+    const checkbox = div.querySelector('input[type=checkbox]');
+    checkbox.addEventListener("change", () => {
+      div.classList.toggle("selected", checkbox.checked);
+      updateDownloadButton();
+    });
+    resultsEl.appendChild(div);
+  }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function updateDownloadButton() {
+  const anyChecked = document.querySelectorAll('.result input[type=checkbox]:checked').length > 0;
+  document.getElementById("download-btn").disabled = !anyChecked;
+}
+
+document.getElementById("download-btn").onclick = async () => {
+  const selected = [];
+  document.querySelectorAll(".result").forEach((div) => {
+    const checkbox = div.querySelector('input[type=checkbox]');
+    if (!checkbox.checked) return;
+    const id = parseInt(div.dataset.id, 10);
+    const renameInput = div.querySelector(".rename").value.trim();
+    const item = lastResults.find((r) => r.id === id);
+    selected.push({
+      kind,
+      id,
+      display_name: renameInput || null,
+    });
+  });
+  if (selected.length === 0) return;
+  await fetch("/api/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(selected),
+  });
+  document.querySelectorAll('.result input[type=checkbox]:checked').forEach((cb) => (cb.checked = false));
+  document.querySelectorAll(".result.selected").forEach((div) => div.classList.remove("selected"));
+  updateDownloadButton();
+};
+
+// --- live progress ---------------------------------------------------
+
+const jobsEl = document.getElementById("jobs-list");
+const jobRows = {};
+
+function ensureJobRow(jobId, title) {
+  if (jobRows[jobId]) return jobRows[jobId];
+  if (jobsEl.classList.contains("empty")) {
+    jobsEl.classList.remove("empty");
+    jobsEl.innerHTML = "";
+  }
+  const div = document.createElement("div");
+  div.className = "job";
+  div.innerHTML = `
+    <div class="job-title">${escapeHtml(title || jobId)}</div>
+    <div class="job-bar-track"><div class="job-bar-fill"></div></div>
+    <div class="job-meta">queued</div>
+  `;
+  jobsEl.prepend(div);
+  jobRows[jobId] = div;
+  return div;
+}
+
+function updateJobRow(jobId, meta) {
+  const div = ensureJobRow(jobId, meta.title);
+  const fill = div.querySelector(".job-bar-fill");
+  const metaEl = div.querySelector(".job-meta");
+  const total = meta.total;
+  const completed = meta.completed || 0;
+  if (total) {
+    fill.style.width = `${Math.min(100, (completed / total) * 100).toFixed(1)}%`;
+    metaEl.textContent = `${formatBytes(completed)} / ${formatBytes(total)}`;
+  } else {
+    fill.style.width = "100%";
+    metaEl.textContent = `${formatBytes(completed)} (total unknown)`;
+  }
+  fill.classList.remove("done", "failed");
+  if (meta.status === "done") {
+    fill.classList.add("done");
+    fill.style.width = "100%";
+    metaEl.textContent = "done";
+  } else if (meta.status === "failed") {
+    fill.classList.add("failed");
+    metaEl.textContent = "failed";
+  }
+}
+
+function formatBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
+const jobsState = {};
+
+const es = new EventSource("/api/events");
+es.addEventListener("snapshot", (e) => {
+  const snapshot = JSON.parse(e.data);
+  for (const [jobId, meta] of Object.entries(snapshot)) {
+    jobsState[jobId] = meta;
+    updateJobRow(jobId, meta);
+  }
+});
+es.addEventListener("start", (e) => {
+  const data = JSON.parse(e.data);
+  jobsState[data.job_id] = { title: data.title, completed: 0, total: null, status: "downloading" };
+  updateJobRow(data.job_id, jobsState[data.job_id]);
+});
+es.addEventListener("progress", (e) => {
+  const data = JSON.parse(e.data);
+  const meta = jobsState[data.job_id] || (jobsState[data.job_id] = { completed: 0 });
+  meta.completed = data.completed;
+  updateJobRow(data.job_id, meta);
+});
+es.addEventListener("total", (e) => {
+  const data = JSON.parse(e.data);
+  const meta = jobsState[data.job_id] || (jobsState[data.job_id] = { completed: 0 });
+  meta.total = data.total;
+  updateJobRow(data.job_id, meta);
+});
+es.addEventListener("complete", (e) => {
+  const data = JSON.parse(e.data);
+  const meta = jobsState[data.job_id] || (jobsState[data.job_id] = { completed: 0 });
+  meta.status = data.ok ? "done" : "failed";
+  updateJobRow(data.job_id, meta);
+});
+</script>
+</body>
+</html>

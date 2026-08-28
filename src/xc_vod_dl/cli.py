@@ -709,5 +709,43 @@ def clean(root: Path, yes: bool) -> None:
     click.echo(f"removed {len(stray)} file(s)")
 
 
+@main.command()
+@click.option("--server", help="Overrides the configured server URL.")
+@click.option("--username", help="Overrides the configured username.")
+@click.option("--password", help="Overrides the configured password.")
+@click.option(
+    "--config", "config_path", type=click.Path(path_type=Path), help="Path to config.toml."
+)
+@click.option("--host", default="127.0.0.1", help="Interface to bind the web UI to.")
+@click.option("--port", default=8787, type=int, help="Port to bind the web UI to.")
+def serve(
+    server: str | None,
+    username: str | None,
+    password: str | None,
+    config_path: Path | None,
+    host: str,
+    port: int,
+) -> None:
+    """Launch a local web UI (search/select/download) driving the same
+    download engine as fetch/browse — for anyone who'd rather click than
+    type. Needs the optional web extra: pip install xc-vod-dl[web]."""
+    config = _load_config_or_exit(config_path, server, username, password)
+    try:
+        import uvicorn
+
+        from xc_vod_dl.web.app import create_app
+    except ImportError:
+        click.echo(
+            "error: the web UI needs extra dependencies — install with: pip install xc-vod-dl[web]",
+            err=True,
+        )
+        sys.exit(2)
+
+    _setup_logging(config, quiet=False)
+    app = create_app(config)
+    click.echo(f"xc-vod-dl web UI on http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     main()

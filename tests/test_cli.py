@@ -1,4 +1,5 @@
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -710,6 +711,20 @@ def test_clean_asks_for_confirmation_by_default(tmp_path):
         runner.invoke(main, ["clean"], input="n\n")
 
         assert stray.exists()  # declined deletion
+
+
+def test_serve_reports_a_friendly_error_without_the_web_extra(monkeypatch, tmp_path):
+    monkeypatch.setenv("XCVODDL_SERVER", "http://127.0.0.1:1")
+    monkeypatch.setenv("XCVODDL_USERNAME", "demo")
+    monkeypatch.setenv("XCVODDL_PASSWORD", "demo")
+    monkeypatch.setitem(sys.modules, "uvicorn", None)  # simulate: not installed
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["serve"])
+
+        assert result.exit_code == 2
+        assert "pip install xc-vod-dl[web]" in result.output
 
 
 def test_run_pipeline_registers_all_jobs_before_running_any(tmp_path):
