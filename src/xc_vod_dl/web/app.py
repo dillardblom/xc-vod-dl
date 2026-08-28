@@ -20,7 +20,7 @@ from xc_vod_dl.gaps import (
 )
 from xc_vod_dl.jobs import JobSpec
 from xc_vod_dl.state.store import StateStore
-from xc_vod_dl.ui.interactive import _cross_series_gap_maps
+from xc_vod_dl.ui.interactive import _cross_series_gap_maps, _sample_resolution
 from xc_vod_dl.web.runner import JobRunner
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -60,6 +60,8 @@ def create_app(config: Config) -> FastAPI:
                 "id": s.stream_id,
                 "name": s.name,
                 "category": categories.get(s.category_id, s.category_id),
+                "container_extension": s.container_extension,
+                "year": s.year,
             }
             for s in client.get_vod_streams()
             if q_lower in s.name.lower()
@@ -95,6 +97,7 @@ def create_app(config: Config) -> FastAPI:
                 dupe_map = detect_duplicate_episodes_in_series(info)
                 entry["seasons"] = sorted(info.episodes)
                 entry["episode_count"] = sum(len(eps) for eps in info.episodes.values())
+                entry["resolution"] = _sample_resolution(info)
                 entry["gaps"] = gap_map
                 entry["duplicates"] = dupe_map
                 entry["report"] = (

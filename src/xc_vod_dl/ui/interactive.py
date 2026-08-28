@@ -139,9 +139,7 @@ def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
         return []
 
     choices = [
-        questionary.Choice(
-            title=f"{s.name}  [{cat_names.get(s.category_id, s.category_id)}]", value=s
-        )
+        questionary.Choice(title=_movie_label(s, cat_names.get(s.category_id, s.category_id)), value=s)
         for s in matches
     ]
     selected = questionary.checkbox(
@@ -150,6 +148,22 @@ def _search_movies(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
     if not selected:
         return []
     return _movie_specs_with_rename(selected)
+
+
+def _movie_label(s: VodStream, category: str | None = None) -> str:
+    """Format/year are cheap — already in the streams listing, no extra
+    fetch. Resolution/duration/audio-language would need a get_vod_info()
+    call per result and, checked against a real server, are never actually
+    populated for movies there (only sometimes for series/episodes) — not
+    worth the added search latency until a server that does populate them
+    is the common case."""
+    label = s.name
+    if category:
+        label += f"  [{category}]"
+    extra = s.container_extension.upper()
+    if s.year:
+        extra += f", {s.year}"
+    return f"{label}  ({extra})"
 
 
 def _movie_specs_with_rename(selected: list[VodStream]) -> list[JobSpec]:
@@ -200,6 +214,9 @@ def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
             n_seasons = len(info.episodes)
             n_episodes = sum(len(eps) for eps in info.episodes.values())
             label += f"  ({n_seasons} season(s), {n_episodes} episode(s))"
+            resolution = _sample_resolution(info)
+            if resolution:
+                label += f"  [{resolution}]"
             gap_map = cross_gap_by_id.get(s.series_id) or detect_gaps_in_series(info)
             dupe_map = detect_duplicate_episodes_in_series(info)
             if gap_map or dupe_map:
@@ -242,6 +259,20 @@ def _fetch_series_info_with_progress(
     return results
 
 
+def _sample_resolution(info: SeriesInfo) -> str | None:
+    """Episode-level resolution is only sometimes populated by the backend
+    (checked against a real catalog: roughly half of series had it, the
+    rest didn't at all) and duration isn't a useful signal at the series
+    level (it varies episode to episode by design). Resolution is the one
+    field worth surfacing per search result — take the first episode that
+    actually has it as a representative sample for the whole listing."""
+    for eps in info.episodes.values():
+        for ep in eps:
+            if ep.resolution:
+                return ep.resolution
+    return None
+
+
 def _cross_series_gap_maps(
     matches: list[SeriesStream], info_by_id: dict[int, SeriesInfo | None]
 ) -> dict[int, dict[int, list[int]]]:
@@ -280,7 +311,7 @@ def _browse_movies_by_category(client: XtreamClient) -> list[JobSpec]:
         console.print("[yellow]No movies in this category.[/yellow]")
         return []
 
-    choices = [questionary.Choice(title=s.name, value=s) for s in streams]
+    choices = [questionary.Choice(title=_movie_label(s), value=s) for s in streams]
     selected = questionary.checkbox(
         "Select movie(s) (space to toggle, enter to confirm):", choices=choices
     ).ask()

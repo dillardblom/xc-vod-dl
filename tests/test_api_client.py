@@ -50,6 +50,35 @@ def test_get_vod_streams(load_fixture):
 
 
 @responses.activate
+def test_get_vod_streams_parses_year_when_present():
+    responses.add(
+        responses.GET,
+        f"{SERVER}/player_api.php",
+        json=[
+            {
+                "stream_id": 101,
+                "name": "Example Movie",
+                "category_id": "1",
+                "container_extension": "mkv",
+                "year": 1999,
+            }
+        ],
+        status=200,
+    )
+    streams = make_client().get_vod_streams()
+    assert streams[0].year == "1999"
+
+
+@responses.activate
+def test_get_vod_streams_year_is_none_when_absent(load_fixture):
+    responses.add(
+        responses.GET, f"{SERVER}/player_api.php", json=load_fixture("vod_streams.json"), status=200
+    )
+    streams = make_client().get_vod_streams()
+    assert streams[0].year is None
+
+
+@responses.activate
 def test_get_vod_info(load_fixture):
     responses.add(
         responses.GET, f"{SERVER}/player_api.php", json=load_fixture("vod_info.json"), status=200
@@ -93,6 +122,42 @@ def test_get_series_info_builds_episodes_by_season(load_fixture):
     assert len(season1) == 9  # 1-8, 10 — episode 9 deliberately missing in fixture
     assert [e.episode_num for e in season1][:3] == [1, 2, 3]
     assert season1[0].episode_id == 9001
+
+
+@responses.activate
+def test_get_series_info_parses_episode_resolution_when_present():
+    responses.add(
+        responses.GET,
+        f"{SERVER}/player_api.php",
+        json={
+            "seasons": [],
+            "info": {"name": "Example Series"},
+            "episodes": {
+                "1": [
+                    {
+                        "id": "9001",
+                        "episode_num": 1,
+                        "title": "Pilot",
+                        "container_extension": "mkv",
+                        "season": 1,
+                        "info": {"video": {"width": 1920, "height": 1080}},
+                    }
+                ]
+            },
+        },
+        status=200,
+    )
+    info = make_client().get_series_info(6789)
+    assert info.episodes[1][0].resolution == "1920x1080"
+
+
+@responses.activate
+def test_get_series_info_resolution_is_none_when_absent(load_fixture):
+    responses.add(
+        responses.GET, f"{SERVER}/player_api.php", json=load_fixture("series_info.json"), status=200
+    )
+    info = make_client().get_series_info(6789)
+    assert info.episodes[1][0].resolution is None
 
 
 def test_movie_url_format():

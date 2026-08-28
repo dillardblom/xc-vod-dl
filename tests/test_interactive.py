@@ -108,7 +108,7 @@ def test_browse_movies_by_category(monkeypatch):
     ]
 
     _select_sequence(monkeypatch, ["Movies", "Browse by category", "Action", "Done"])
-    _checkbox_once(monkeypatch, ["Example Movie"])
+    _checkbox_once(monkeypatch, ["Example Movie  (MKV)"])
 
     specs = interactive_module.browse_and_select(client)
 
@@ -126,7 +126,7 @@ def test_browse_movies_rename_prompt_overrides_display_name(monkeypatch):
     ]
 
     _select_sequence(monkeypatch, ["Movies", "Browse by category", "Action", "Done"])
-    _checkbox_once(monkeypatch, ["NL ▎ Example Movie"])
+    _checkbox_once(monkeypatch, ["NL ▎ Example Movie  (MKV)"])
     _confirm_sequence(monkeypatch, [False])
     _text_sequence(monkeypatch, ["Example Movie"])
 
@@ -296,7 +296,7 @@ def test_search_movies_across_categories(monkeypatch):
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["wolf"])
-    _checkbox_once(monkeypatch, ["Wolfs (2024)  [Action]", "Wolf Creek  [Horror]"])
+    _checkbox_once(monkeypatch, ["Wolfs (2024)  [Action]  (MP4)", "Wolf Creek  [Horror]  (MP4)"])
 
     specs = interactive_module.browse_and_select(client)
 
@@ -317,6 +317,23 @@ def test_search_movies_no_matches_returns_empty(monkeypatch):
 
     specs = interactive_module.browse_and_select(client)
     assert specs == []
+
+
+def test_search_movies_label_includes_year_when_available(monkeypatch):
+    client = MagicMock()
+    client.get_vod_streams.return_value = [
+        VodStream(
+            stream_id=101, name="Old Movie", category_id="1", container_extension="mp4", year="1999"
+        )
+    ]
+    client.get_vod_categories.return_value = [Category(category_id="1", category_name="Action")]
+
+    _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
+    _text_sequence(monkeypatch, ["old"])
+    _checkbox_once(monkeypatch, ["Old Movie  [Action]  (MP4, 1999)"])
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == [JobSpec(kind="movie", id=101)]
 
 
 def test_search_movies_empty_query_skips_fetch_entirely(monkeypatch):
@@ -341,7 +358,7 @@ def test_search_movies_is_case_insensitive(monkeypatch):
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["wolf"])
-    _checkbox_once(monkeypatch, ["WOLFS  [Action]"])
+    _checkbox_once(monkeypatch, ["WOLFS  [Action]  (MP4)"])
 
     specs = interactive_module.browse_and_select(client)
     assert specs == [JobSpec(kind="movie", id=101)]
@@ -359,7 +376,7 @@ def test_search_movies_caches_catalog_across_repeated_searches(monkeypatch):
         ["Movies", "Search by name", "Movies", "Search by name", "Done"],
     )
     _text_sequence(monkeypatch, ["wolf", "wolf"])
-    _checkbox_once(monkeypatch, ["Wolfs  [Action]"])
+    _checkbox_once(monkeypatch, ["Wolfs  [Action]  (MP4)"])
 
     interactive_module.browse_and_select(client)
 
@@ -473,6 +490,54 @@ def test_search_series_label_shows_gap_marker(monkeypatch):
     _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
     _text_sequence(monkeypatch, ["gappy"])
     _checkbox_once(monkeypatch, ["Gappy Show  [Sci-Fi]  (1 season(s), 2 episode(s))  [gaps]"])
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == [JobSpec(kind="series", id=6789)]
+
+
+def test_search_series_label_shows_sample_resolution_when_available(monkeypatch):
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="HD Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="HD Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "E1", "mkv", resolution="1920x1080")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
+    _text_sequence(monkeypatch, ["hd"])
+    _checkbox_once(
+        monkeypatch, ["HD Show  [Sci-Fi]  (1 season(s), 1 episode(s))  [1920x1080]"]
+    )
+
+    specs = interactive_module.browse_and_select(client)
+    assert specs == [JobSpec(kind="series", id=6789)]
+
+
+def test_search_series_label_omits_resolution_when_not_populated(monkeypatch):
+    client = MagicMock()
+    client.get_series_streams.return_value = [
+        SeriesStream(series_id=6789, name="No Res Show", category_id="3")
+    ]
+    client.get_series_categories.return_value = [Category(category_id="3", category_name="Sci-Fi")]
+    client.get_series_info.return_value = SeriesInfo(
+        name="No Res Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[],
+        episodes={1: [Episode(9001, 1, 1, "E1", "mkv")]},
+    )
+
+    _select_sequence(monkeypatch, ["Series", "Search by name", "Whole series", "Done"])
+    _text_sequence(monkeypatch, ["no res"])
+    _checkbox_once(monkeypatch, ["No Res Show  [Sci-Fi]  (1 season(s), 1 episode(s))"])
 
     specs = interactive_module.browse_and_select(client)
     assert specs == [JobSpec(kind="series", id=6789)]

@@ -108,8 +108,17 @@ function renderResults(data) {
     if (item.seasons) {
       const episodeCount = item.episode_count ?? "?";
       meta += `  (${item.seasons.length} season(s), ${episodeCount} episode(s))`;
+      if (item.resolution) meta += `  [${item.resolution}]`;
     } else if (item.error) {
       meta += `  (${item.error})`;
+    } else if (item.container_extension) {
+      // Movie: resolution/duration/audio-language aren't populated by every
+      // Xtream backend (confirmed empty for movies on a real server this
+      // was built against) — container format + year are the only fields
+      // reliably free of an extra per-item fetch.
+      let extra = item.container_extension.toUpperCase();
+      if (item.year) extra += `, ${item.year}`;
+      meta += `  (${extra})`;
     }
 
     div.innerHTML = `

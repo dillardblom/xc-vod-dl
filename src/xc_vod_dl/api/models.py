@@ -52,14 +52,17 @@ class VodStream:
     name: str
     category_id: str
     container_extension: str
+    year: str | None = None
 
     @classmethod
     def from_json(cls, data: dict) -> VodStream:
+        year = data.get("year")
         return cls(
             stream_id=_int(data.get("stream_id")),
             name=data.get("name", ""),
             category_id=str(data.get("category_id", "")),
             container_extension=data.get("container_extension") or "mp4",
+            year=str(year) if year else None,
         )
 
 
@@ -93,10 +96,13 @@ class Episode:
     container_extension: str
     plot: str = ""
     tmdb_id: str | None = None
+    resolution: str | None = None
 
     @classmethod
     def from_json(cls, data: dict, season: int) -> Episode:
         info = data.get("info") or {}
+        video = info.get("video") or {}
+        width, height = video.get("width"), video.get("height")
         return cls(
             episode_id=_int(data.get("id")),
             season=_int(data.get("season"), default=season) or season,
@@ -105,6 +111,7 @@ class Episode:
             container_extension=data.get("container_extension") or "mp4",
             plot=info.get("plot", "") or "",
             tmdb_id=str(info["tmdb_id"]) if info.get("tmdb_id") else None,
+            resolution=f"{width}x{height}" if width and height else None,
         )
 
 

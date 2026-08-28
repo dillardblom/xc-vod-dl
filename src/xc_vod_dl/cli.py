@@ -711,8 +711,8 @@ def status(
 ) -> None:
     """Show what's tracked in state.db right now — pending, in progress,
     failed, or done — without resuming or re-running anything. What
-    `resume` would act on is exactly the pending/downloading/verifying/
-    failed groups shown here."""
+    `resume` would act on is exactly the pending/downloading/verifying/failed
+    groups shown here."""
     config = _load_config_or_exit(config_path, server, username, password)
     state_path = state_db_override or config.download.state_db
     if not state_path.exists():

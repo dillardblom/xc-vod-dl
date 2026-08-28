@@ -471,7 +471,7 @@ def test_browse_command_end_to_end(xtream_server, monkeypatch, tmp_path):
     }
 
     _select_sequence(monkeypatch, ["Movies", "Browse by category", "Action", "Done"])
-    _checkbox_once(monkeypatch, ["Example Movie"])
+    _checkbox_once(monkeypatch, ["Example Movie  (MP4)"])
 
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -544,7 +544,7 @@ def test_browse_command_search_end_to_end(xtream_server, monkeypatch, tmp_path):
 
     _select_sequence(monkeypatch, ["Movies", "Search by name", "Done"])
     _text_sequence(monkeypatch, ["example"])
-    _checkbox_once(monkeypatch, ["Example Movie  [Action]"])
+    _checkbox_once(monkeypatch, ["Example Movie  [Action]  (MP4)"])
 
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):

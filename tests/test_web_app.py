@@ -45,7 +45,32 @@ def test_search_movies_matches_by_substring(xtream_server, tmp_path):
     assert res.status_code == 200
     data = res.json()
     assert len(data) == 1
-    assert data[0] == {"id": 101, "name": "Example Movie", "category": "Action"}
+    assert data[0] == {
+        "id": 101,
+        "name": "Example Movie",
+        "category": "Action",
+        "container_extension": "mp4",
+        "year": None,
+    }
+
+
+def test_search_movies_includes_year_when_present(xtream_server, tmp_path):
+    base_url, state = xtream_server
+    state["vod_categories"] = [{"category_id": "1", "category_name": "Action"}]
+    state["vod_streams"] = [
+        {
+            "stream_id": 101,
+            "name": "Old Movie",
+            "category_id": "1",
+            "container_extension": "mp4",
+            "year": 1999,
+        },
+    ]
+    client = _client(base_url, tmp_path)
+
+    res = client.get("/api/movies/search", params={"q": "old"})
+
+    assert res.json()[0]["year"] == "1999"
 
 
 def test_search_movies_empty_query_returns_nothing(xtream_server, tmp_path):
@@ -80,8 +105,36 @@ def test_search_series_reports_gaps(xtream_server, tmp_path):
     assert len(data) == 1
     assert data[0]["seasons"] == [1]
     assert data[0]["episode_count"] == 2
+    assert data[0]["resolution"] is None  # not populated in this fixture
     assert data[0]["gaps"] == {"1": [2]}
     assert "S01E02" in data[0]["report"]
+
+
+def test_search_series_includes_sample_resolution_when_present(xtream_server, tmp_path):
+    base_url, state = xtream_server
+    state["series_categories"] = [{"category_id": "3", "category_name": "Sci-Fi"}]
+    state["series_streams"] = [{"series_id": 6789, "name": "HD Show", "category_id": "3"}]
+    state["series_info"]["6789"] = {
+        "seasons": [],
+        "info": {"name": "HD Show"},
+        "episodes": {
+            "1": [
+                {
+                    "id": "1",
+                    "episode_num": 1,
+                    "title": "E1",
+                    "container_extension": "mkv",
+                    "season": 1,
+                    "info": {"video": {"width": 1920, "height": 1080}},
+                },
+            ]
+        },
+    }
+    client = _client(base_url, tmp_path)
+
+    res = client.get("/api/series/search", params={"q": "hd"})
+
+    assert res.json()[0]["resolution"] == "1920x1080"
 
 
 def test_queue_download_and_job_reaches_done(xtream_server, tmp_path):
