@@ -174,6 +174,7 @@ class XtreamServerHandler(http.server.BaseHTTPRequestHandler):
                 payload = {}
             if payload is None:
                 self.send_response(404)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             body = json.dumps(payload).encode()
@@ -202,6 +203,7 @@ class XtreamServerHandler(http.server.BaseHTTPRequestHandler):
             return
 
         self.send_response(404)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
 

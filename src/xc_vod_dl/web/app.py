@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import queue
 from pathlib import Path
 from typing import Any
 
@@ -139,18 +138,23 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/events")
     async def events() -> StreamingResponse:
-        q = runner.subscribe()
+        # asyncio.Queue, not queue.Queue: a blocking queue.Queue.get()
+        # bridged in via run_in_executor can't be cancelled once the
+        # underlying OS thread has entered the blocking call — confirmed
+        # live, it left `xc-vod-dl serve` needing a second, impatient
+        # Ctrl-C to die (which then raced uvicorn's own signal handling
+        # into an ugly traceback) whenever a client was connected here.
+        q = runner.subscribe(asyncio.get_running_loop())
 
         async def stream():
             try:
                 # Replay the current snapshot first so a client that
                 # connects mid-run isn't blind to jobs already in flight.
                 yield f"event: snapshot\ndata: {json.dumps(runner.jobs)}\n\n"
-                loop = asyncio.get_running_loop()
                 while True:
                     try:
-                        event = await loop.run_in_executor(None, q.get, True, 15)
-                    except queue.Empty:
+                        event = await asyncio.wait_for(q.get(), timeout=15)
+                    except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
                     payload = {"job_id": event.job_id, **event.data}

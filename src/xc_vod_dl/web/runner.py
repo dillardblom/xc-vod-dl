@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import queue
 import threading
@@ -41,10 +42,10 @@ class JobRunner:
     def submit(self, specs: list[JobSpec]) -> None:
         self._queue.put(specs)
 
-    def subscribe(self) -> queue.Queue[ProgressEvent]:
-        return self._bus.subscribe()
+    def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[ProgressEvent]:
+        return self._bus.subscribe(loop)
 
-    def unsubscribe(self, q: queue.Queue[ProgressEvent]) -> None:
+    def unsubscribe(self, q: asyncio.Queue[ProgressEvent]) -> None:
         self._bus.unsubscribe(q)
 
     def _loop(self) -> None:
@@ -59,6 +60,13 @@ class JobRunner:
     def _run_batch(self, specs: list[JobSpec]) -> None:
         jobs, writers = _resolve_jobs(self.client, self.config, self._session, specs)
         if not jobs:
+            # _resolve_jobs already logged a per-spec warning (e.g. a
+            # timeout reaching the server) — without this, the web UI would
+            # otherwise show nothing at all happening, indistinguishable
+            # from the request never having been received.
+            self._bus.publish(
+                ProgressEvent("log", "*", {"message": "nothing could be resolved, see server log"})
+            )
             return
         for writer in writers:
             writer()

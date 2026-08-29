@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import queue
+import asyncio
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -63,26 +63,43 @@ class WebProgressReporter:
 
 
 class EventBus:
-    """Simple in-memory pub/sub: each SSE connection gets its own Queue,
-    fed by publish() from whichever thread is actually running downloads."""
+    """Simple in-memory pub/sub: each SSE connection gets its own
+    asyncio.Queue, fed by publish() from whichever *thread* is actually
+    running downloads (JobRunner's background worker, not the event loop).
+
+    Deliberately asyncio.Queue rather than a plain queue.Queue: the SSE
+    handler needs to `await` on it so a server shutdown can cancel that
+    await cleanly. A blocking queue.Queue.get() bridged in via
+    run_in_executor can't be cancelled once the underlying OS thread has
+    entered the blocking call — confirmed live: it left a real `xc-vod-dl
+    serve` process needing a second, impatient Ctrl-C to die, which then
+    raced uvicorn's own signal handling into an ugly traceback. Pushing
+    into an asyncio.Queue from a non-event-loop thread needs
+    call_soon_threadsafe — put_nowait directly from another thread isn't
+    safe.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._subscribers: list[queue.Queue[ProgressEvent]] = []
+        self._subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue[ProgressEvent]]] = []
 
-    def subscribe(self) -> queue.Queue[ProgressEvent]:
-        q: queue.Queue[ProgressEvent] = queue.Queue()
+    def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[ProgressEvent]:
+        q: asyncio.Queue[ProgressEvent] = asyncio.Queue()
         with self._lock:
-            self._subscribers.append(q)
+            self._subscribers.append((loop, q))
         return q
 
-    def unsubscribe(self, q: queue.Queue[ProgressEvent]) -> None:
+    def unsubscribe(self, q: asyncio.Queue[ProgressEvent]) -> None:
         with self._lock:
-            if q in self._subscribers:
-                self._subscribers.remove(q)
+            self._subscribers = [(loop, sub_q) for loop, sub_q in self._subscribers if sub_q is not q]
 
     def publish(self, event: ProgressEvent) -> None:
         with self._lock:
             subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(event)
+        for loop, q in subscribers:
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+            except RuntimeError:
+                # Event loop already closed (server shutting down) — no one
+                # is listening on the other end regardless.
+                pass
