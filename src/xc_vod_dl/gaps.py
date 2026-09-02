@@ -109,9 +109,32 @@ def detect_gaps_across_series(infos: list[SeriesInfo]) -> list[dict[int, list[in
     )
 
 
+def season_episode_counts(series: SeriesInfo) -> tuple[dict[int, int], dict[int, int]]:
+    """present_counts, declared_counts for format_gap_report: how many
+    episodes this listing actually has per season, and how many the
+    provider's own season metadata claims there should be (0/absent if the
+    provider doesn't populate that field — not every one does)."""
+    present = {season: len(eps) for season, eps in series.episodes.items()}
+    declared = {s.season_number: s.episode_count for s in series.seasons if s.episode_count}
+    return present, declared
+
+
 def format_gap_report(
-    series_name: str, gaps: dict[int, list[int]], duplicates: dict[int, list[int]] | None = None
+    series_name: str,
+    gaps: dict[int, list[int]],
+    duplicates: dict[int, list[int]] | None = None,
+    *,
+    present_counts: dict[int, int] | None = None,
+    declared_counts: dict[int, int] | None = None,
 ) -> str:
+    """present_counts/declared_counts are optional (season -> count) maps
+    used to annotate each incomplete season with "(present/expected)" —
+    e.g. "Season 3: S03E26, ... (25/50)". Without them, a season reported
+    as "missing 25 episodes" doesn't say whether that's a near-complete
+    season or one that's barely started. declared_counts should come from
+    the provider's own per-season episode_count when available; when it
+    isn't (0/absent), the caller can omit it and this falls back to
+    present + missing, which is at least a lower bound on the true total."""
     if not gaps and not duplicates:
         return f"{series_name}: no missing or duplicate episodes detected."
     lines = [f"{series_name}:"]
@@ -119,7 +142,12 @@ def format_gap_report(
         lines.append("  missing episodes:")
         for season, missing in gaps.items():
             missing_fmt = ", ".join(f"S{season:02d}E{n:02d}" for n in missing)
-            lines.append(f"    Season {season}: {missing_fmt}")
+            count_note = ""
+            if present_counts is not None:
+                present = present_counts.get(season, 0)
+                expected = (declared_counts or {}).get(season) or (present + len(missing))
+                count_note = f"  ({present}/{expected})"
+            lines.append(f"    Season {season}: {missing_fmt}{count_note}")
     if duplicates:
         lines.append("  duplicate episode numbers:")
         for season, repeated in duplicates.items():

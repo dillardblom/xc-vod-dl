@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 
 
 def _int(value, default: int = 0) -> int:
@@ -130,6 +131,31 @@ class Season:
         )
 
 
+def _dedupe_episode_title(title: str, series_name: str, season: int, episode_num: int) -> str:
+    """Some providers put the *whole* canonical label back into each
+    episode's own title field — e.g. title="{series name} - S01E30 -
+    Aflevering 30" for a series already named "{series name}". Left as-is,
+    that gets concatenated a second time by _episode_target's own
+    "{series} - SxxEyy - {title}" filename, producing filenames like
+    "De Barbapapas - S01E30 - [NL] Barbapapa (...) - S01E30 - Aflevering
+    30.nfo" — confirmed against a real catalog. Strip a leading duplicate of
+    the series name and/or the episode's own SxxEyy tag before it's used
+    anywhere downstream, so a rename of the series doesn't leave the old
+    name embedded in every episode filename too."""
+    if not title:
+        return title
+    cleaned = title
+    if series_name:
+        cleaned = re.sub(
+            rf"^\s*{re.escape(series_name)}\s*[-:]\s*", "", cleaned, count=1, flags=re.IGNORECASE
+        )
+    cleaned = re.sub(
+        rf"^\s*S{season:02d}E{episode_num:02d}\s*[-:]\s*", "", cleaned, count=1, flags=re.IGNORECASE
+    )
+    cleaned = cleaned.strip()
+    return cleaned or title
+
+
 @dataclass(frozen=True)
 class SeriesInfo:
     name: str
@@ -143,13 +169,18 @@ class SeriesInfo:
     @classmethod
     def from_json(cls, data: dict) -> SeriesInfo:
         info = data.get("info") or {}
+        series_name = info.get("name", "") or ""
         seasons = [Season.from_json(s) for s in data.get("seasons") or []]
         episodes: dict[int, list[Episode]] = {}
         for season_key, ep_list in (data.get("episodes") or {}).items():
             season_num = _int(season_key)
-            episodes[season_num] = [Episode.from_json(e, season_num) for e in ep_list]
+            parsed = [Episode.from_json(e, season_num) for e in ep_list]
+            episodes[season_num] = [
+                replace(ep, title=_dedupe_episode_title(ep.title, series_name, ep.season, ep.episode_num))
+                for ep in parsed
+            ]
         return cls(
-            name=info.get("name", "") or "",
+            name=series_name,
             plot=info.get("plot", "") or "",
             genre=info.get("genre", "") or "",
             tmdb_id=str(info["tmdb_id"]) if info.get("tmdb_id") else None,

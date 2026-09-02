@@ -171,6 +171,65 @@ def test_get_series_info_parses_episode_resolution_when_present():
 
 
 @responses.activate
+def test_get_series_info_strips_provider_embedded_series_name_and_tag_from_episode_title():
+    """Confirmed against a real provider: episode titles came back as
+    "{series name} - SxxEyy - {actual title}" — the whole canonical label
+    baked into every episode's own title field. Left as-is, _episode_target
+    concatenates its own "{series} - SxxEyy - " prefix on top, producing a
+    filename with the series name and episode tag each appearing twice."""
+    responses.add(
+        responses.GET,
+        f"{SERVER}/player_api.php",
+        json={
+            "seasons": [],
+            "info": {"name": "Example Series"},
+            "episodes": {
+                "1": [
+                    {
+                        "id": "9001",
+                        "episode_num": 30,
+                        "title": "Example Series - S01E30 - Aflevering 30",
+                        "container_extension": "mkv",
+                        "season": 1,
+                        "info": {},
+                    }
+                ]
+            },
+        },
+        status=200,
+    )
+    info = make_client().get_series_info(6789)
+    assert info.episodes[1][0].title == "Aflevering 30"
+
+
+@responses.activate
+def test_get_series_info_leaves_a_clean_episode_title_untouched():
+    responses.add(
+        responses.GET,
+        f"{SERVER}/player_api.php",
+        json={
+            "seasons": [],
+            "info": {"name": "Example Series"},
+            "episodes": {
+                "1": [
+                    {
+                        "id": "9001",
+                        "episode_num": 1,
+                        "title": "The Pilot",
+                        "container_extension": "mkv",
+                        "season": 1,
+                        "info": {},
+                    }
+                ]
+            },
+        },
+        status=200,
+    )
+    info = make_client().get_series_info(6789)
+    assert info.episodes[1][0].title == "The Pilot"
+
+
+@responses.activate
 def test_get_series_info_resolution_is_none_when_absent(load_fixture):
     responses.add(
         responses.GET, f"{SERVER}/player_api.php", json=load_fixture("series_info.json"), status=200

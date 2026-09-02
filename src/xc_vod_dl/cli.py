@@ -22,6 +22,7 @@ from xc_vod_dl.gaps import (
     detect_duplicate_episodes_in_series,
     detect_gaps_in_series,
     format_gap_report,
+    season_episode_counts,
 )
 from xc_vod_dl.jobs import JobSpec, parse_manifest
 from xc_vod_dl.nfo import build_episode_nfo, build_movie_nfo, build_series_nfo
@@ -32,7 +33,7 @@ from xc_vod_dl.ui.progress import ProgressReporter
 logger = logging.getLogger("xc_vod_dl")
 
 
-@click.group()
+@click.group(epilog="Run 'xc-vod-dl COMMAND --help' for that command's full options (e.g. 'xc-vod-dl serve --help').")
 @click.version_option(version=__version__, prog_name="xc-vod-dl")
 def main() -> None:
     """Interactive downloader for Xtream Codes movies and series."""
@@ -78,7 +79,14 @@ def _movie_target(config: Config, vod: VodInfo) -> Path:
     year = vod.release_date[:4] if vod.release_date[:4].isdigit() else None
     already_has_year = bool(re.search(r"\(\d{4}\)\s*$", vod.name))
     label = _sanitize(f"{vod.name} ({year})" if year and not already_has_year else vod.name)
-    return config.download.movies_dir / label / f"{label}.{vod.container_extension}"
+    # .resolve() so the path stored in state.db is location-independent: a
+    # relative movies_dir stored as-is would later be re-checked (by resume,
+    # or status's stale-done disk check) against whatever cwd that *later*
+    # command happens to run from, not the cwd this job was actually
+    # resolved from — a mismatch there makes already-downloaded files look
+    # "missing" and re-queues/re-downloads them for nothing. Confirmed live:
+    # exactly this caused unnecessary duplicate downloads.
+    return (config.download.movies_dir / label / f"{label}.{vod.container_extension}").resolve()
 
 
 def _episode_target(config: Config, series_name: str, episode: Episode) -> Path:
@@ -92,7 +100,7 @@ def _episode_target(config: Config, series_name: str, episode: Episode) -> Path:
         / series_label
         / f"Season {episode.season:02d}"
         / f"{filename}.{episode.container_extension}"
-    )
+    ).resolve()
 
 
 def _download_cover(session: requests.Session, url: str, target_path: Path) -> None:
@@ -155,7 +163,17 @@ def _resolve_series(
     gap_map = detect_gaps_in_series(series)
     dupe_map = detect_duplicate_episodes_in_series(series)
     if gap_map or dupe_map:
-        click.echo(format_gap_report(series.name, gap_map, dupe_map), err=True)
+        present_counts, declared_counts = season_episode_counts(series)
+        click.echo(
+            format_gap_report(
+                series.name,
+                gap_map,
+                dupe_map,
+                present_counts=present_counts,
+                declared_counts=declared_counts,
+            ),
+            err=True,
+        )
 
     series_dir = config.download.series_dir / _sanitize(series.name)
 
@@ -550,17 +568,28 @@ def gaps(
 
     gap_map = detect_gaps_in_series(series)
     dupe_map = detect_duplicate_episodes_in_series(series)
+    present_counts, declared_counts = season_episode_counts(series)
     if as_json:
         click.echo(
             json.dumps(
                 {
                     "gaps": {str(season): missing for season, missing in gap_map.items()},
                     "duplicates": {str(season): repeated for season, repeated in dupe_map.items()},
+                    "present_counts": {str(s): n for s, n in present_counts.items()},
+                    "declared_counts": {str(s): n for s, n in declared_counts.items()},
                 }
             )
         )
     else:
-        click.echo(format_gap_report(series.name, gap_map, dupe_map))
+        click.echo(
+            format_gap_report(
+                series.name,
+                gap_map,
+                dupe_map,
+                present_counts=present_counts,
+                declared_counts=declared_counts,
+            )
+        )
     sys.exit(0 if not gap_map and not dupe_map else 1)
 
 
@@ -580,6 +609,11 @@ def gaps(
     "--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path."
 )
 @click.option("--quiet", is_flag=True, help="Only log warnings/errors.")
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Also cross-check every 'done' record against disk, re-queuing anything actually missing.",
+)
 def resume(
     server: str | None,
     username: str | None,
@@ -590,19 +624,27 @@ def resume(
     verify_mode: str | None,
     state_db_override: Path | None,
     quiet: bool,
+    repair: bool,
 ) -> None:
     """Retry pending/failed/in-progress items left over in state.db from a
     previous run, without re-browsing or re-querying the catalog.
 
-    state.db can be shared across multiple download directories (e.g. a
-    `state_db` configured to an absolute, non-project-local path). A "done"
-    record made that way is only true for the directory it was fetched
-    into — if the same episode/movie was never actually downloaded *here*,
-    trusting the database alone would silently skip it. So every "done"
-    record is checked against this directory's disk before being excluded;
-    anything missing gets reset to pending and resumed like any other
-    incomplete item, rather than resume reporting "nothing to resume" while
-    files are actually missing.
+    Plain `resume` trusts state.db's "done" status as-is and only acts on
+    pending/downloading/verifying/failed records — it never re-checks a
+    "done" item against disk. `--repair` adds that disk cross-check: any
+    "done" record whose target_path doesn't exist gets reset to pending and
+    resumed like any other incomplete item. This exists because state.db
+    can be shared across multiple download directories (e.g. a `state_db`
+    configured to an absolute, non-project-local path), where a "done"
+    record made from one directory doesn't guarantee the file exists in
+    another — but it's opt-in, not the default, because it assumes
+    "done" files stay put at target_path forever. That's false for anyone
+    who treats their download directory as a temporary staging area and
+    moves finished files out to a permanent library afterward — for them,
+    the check did nothing but generate false positives: confirmed live,
+    it silently re-queued (and started re-downloading) 83 already-complete
+    episodes from unrelated shows the moment `resume` ran, just because
+    they'd already been moved out of Downloads into the real library.
     """
     config = _load_config_or_exit(config_path, server, username, password)
     _setup_logging(config, quiet)
@@ -616,22 +658,23 @@ def resume(
     session = new_session()
 
     with StateStore(state_path) as state:
-        stale_done = [r for r in state.list_by_status("done") if not Path(r.target_path).exists()]
-        for record in stale_done:
-            state.mark_status(
-                record.id,
-                "pending",
-                bytes_downloaded=0,
-                last_error="was marked done, but the file is missing in this directory",
-            )
-        if stale_done:
-            click.echo(
-                f"{len(stale_done)} item(s) were marked done elsewhere but are missing here — re-queuing"
-            )
-            logger.info(
-                "%d item(s) reset from done to pending: missing on disk here",
-                len(stale_done),
-            )
+        if repair:
+            stale_done = [r for r in state.list_by_status("done") if not Path(r.target_path).exists()]
+            for record in stale_done:
+                state.mark_status(
+                    record.id,
+                    "pending",
+                    bytes_downloaded=0,
+                    last_error="was marked done, but the file is missing in this directory",
+                )
+            if stale_done:
+                click.echo(
+                    f"{len(stale_done)} item(s) were marked done elsewhere but are missing here — re-queuing"
+                )
+                logger.info(
+                    "%d item(s) reset from done to pending: missing on disk here",
+                    len(stale_done),
+                )
 
         incomplete = state.list_incomplete()
         if not incomplete:
@@ -803,6 +846,42 @@ def clean(root: Path, yes: bool) -> None:
     for path in stray:
         path.unlink()
     click.echo(f"removed {len(stray)} file(s)")
+
+
+@main.command()
+@click.argument("ids", nargs=-1, required=True)
+@click.option(
+    "--config", "config_path", type=click.Path(path_type=Path), help="Path to config.toml."
+)
+@click.option("--state-db", "state_db_override", type=click.Path(path_type=Path), help="Override state.db path.")
+def remove(ids: tuple[str, ...], config_path: Path | None, state_db_override: Path | None) -> None:
+    """Drop one or more items from state.db by id (as shown in `status`,
+    e.g. `movie:58008` or `episode:9837`) — for entries that will never
+    succeed (content pulled from the upstream catalog, a stale test entry,
+    ...) and would otherwise sit in `resume`'s retry list forever, each
+    attempt recreating an empty target directory for a download that 404s
+    before writing anything. Only removes the tracking record; never
+    touches an already-downloaded file. If the record's target directory
+    is now completely empty, that empty directory is removed too."""
+    config = _load_config_or_exit(config_path, None, None, None)
+    state_path = state_db_override or config.download.state_db
+    if not state_path.exists():
+        click.echo(f"no state.db found at {state_path}")
+        return
+
+    with StateStore(state_path) as state:
+        removed = 0
+        for id_ in ids:
+            record = state.get(id_)
+            if record is None:
+                click.echo(f"warning: no record for {id_}", err=True)
+                continue
+            state.remove(id_)
+            removed += 1
+            target_dir = Path(record.target_path).parent
+            if target_dir.is_dir() and not any(target_dir.iterdir()):
+                target_dir.rmdir()
+    click.echo(f"removed {removed} item(s)")
 
 
 @main.command()

@@ -132,6 +132,35 @@ def test_search_series_reports_gaps(xtream_server, tmp_path):
     assert "S01E02" in data[0]["report"]
 
 
+def test_search_series_includes_per_season_episode_listing(xtream_server, tmp_path):
+    """Without this, the web UI has no way to offer anything narrower than
+    "download the whole series" — unlike the CLI's browse flow, which
+    already supports whole series / one season / one episode."""
+    base_url, state = xtream_server
+    state["series_categories"] = [{"category_id": "3", "category_name": "Sci-Fi"}]
+    state["series_streams"] = [{"series_id": 6789, "name": "Some Show", "category_id": "3"}]
+    state["series_info"]["6789"] = {
+        "seasons": [],
+        "info": {"name": "Some Show"},
+        "episodes": {
+            "1": [
+                {"id": "1", "episode_num": 1, "title": "Pilot", "container_extension": "mkv", "season": 1, "info": {}},
+                {"id": "2", "episode_num": 2, "title": "", "container_extension": "mkv", "season": 1, "info": {}},
+            ]
+        },
+    }
+    client = _client(base_url, tmp_path)
+
+    res = client.get("/api/series/search", params={"q": "some"})
+
+    assert res.status_code == 200
+    episodes = res.json()[0]["episodes"]
+    assert episodes["1"] == [
+        {"episode_num": 1, "title": "Pilot"},
+        {"episode_num": 2, "title": "Episode 2"},  # falls back when title is blank
+    ]
+
+
 def test_search_series_includes_sample_resolution_when_present(xtream_server, tmp_path):
     base_url, state = xtream_server
     state["series_categories"] = [{"category_id": "3", "category_name": "Sci-Fi"}]
@@ -210,3 +239,37 @@ def test_queue_download_with_rename(xtream_server, tmp_path):
         time.sleep(0.1)
 
     assert (tmp_path / "Movies" / "Example Movie (2024)" / "Example Movie (2024).mp4").exists()
+
+
+def test_queue_download_with_season_only_queues_that_season(xtream_server, tmp_path):
+    base_url, state = xtream_server
+    state["series_info"]["6789"] = {
+        "seasons": [],
+        "info": {"name": "Some Show"},
+        "episodes": {
+            "1": [
+                {"id": "1", "episode_num": 1, "title": "S1E1", "container_extension": "mkv", "season": 1, "info": {}},
+            ],
+            "2": [
+                {"id": "2", "episode_num": 1, "title": "S2E1", "container_extension": "mkv", "season": 2, "info": {}},
+            ],
+        },
+    }
+    client = _client(base_url, tmp_path)
+
+    res = client.post("/api/download", json=[{"kind": "series", "id": 6789, "season": 2}])
+    assert res.status_code == 202
+
+    import time
+
+    deadline = time.time() + 10
+    jobs = {}
+    while time.time() < deadline:
+        jobs = client.get("/api/jobs").json()
+        if jobs and all(j["status"] in ("done", "failed") for j in jobs.values()):
+            break
+        time.sleep(0.1)
+
+    assert jobs.keys() == {"episode:2"}, "only season 2's episode should have been queued"
+    assert not (tmp_path / "Series" / "Some Show" / "Season 01").exists()
+    assert (tmp_path / "Series" / "Some Show" / "Season 02").exists()

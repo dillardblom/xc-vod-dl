@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xc-vod-dl"
-version = "0.8.1"
+version = "0.9.0"
 description = "Interactive downloader for Xtream Codes IPTV movies and series, with resume, ffprobe verification, adaptive parallel downloads, and missing-episode detection."
 readme = "README.md"
 license = "MIT"

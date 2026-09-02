@@ -196,9 +196,11 @@ def test_resolve_movie_display_name_overrides_folder_and_nfo_title(xtream_server
 
         assert job.title == "Example Movie"
         # _movie_target appends the release year since the renamed name
-        # doesn't already end in one.
+        # doesn't already end in one. target_path is resolved to an
+        # absolute path (see _movie_target) so it stays correct however a
+        # later `resume`/`status` call's cwd differs from this one.
         target_dir = Path("Movies") / "Example Movie (2024)"
-        assert job.target_path == target_dir / "Example Movie (2024).mp4"
+        assert job.target_path == (target_dir / "Example Movie (2024).mp4").resolve()
         nfo = (target_dir / "Example Movie (2024).nfo").read_text()
         assert "<title>Example Movie</title>" in nfo
 
@@ -244,7 +246,9 @@ def test_resolve_series_display_name_overrides_dir_titles_and_episode_showtitle(
             writer()
 
         series_dir = Path("Series") / "Example Series"
-        assert jobs[0].target_path == series_dir / "Season 01" / "Example Series - S01E01 - Pilot.mkv"
+        assert jobs[0].target_path == (
+            series_dir / "Season 01" / "Example Series - S01E01 - Pilot.mkv"
+        ).resolve()
 
         tvshow_nfo = (series_dir / "tvshow.nfo").read_text()
         assert "<title>Example Series</title>" in tvshow_nfo
@@ -435,7 +439,9 @@ def test_gaps_command_json_output(xtream_server, monkeypatch):
     }
     result = CliRunner().invoke(main, ["gaps", "--series-id", "6789", "--json"])
     assert result.exit_code == 0
-    assert result.output.strip() == '{"gaps": {}, "duplicates": {}}'
+    assert result.output.strip() == (
+        '{"gaps": {}, "duplicates": {}, "present_counts": {"1": 2}, "declared_counts": {}}'
+    )
 
 
 def test_gaps_command_reports_duplicate_episode(xtream_server, monkeypatch):
@@ -593,11 +599,14 @@ def test_resume_retries_incomplete_items_without_a_manifest(xtream_server, monke
             assert store.get("movie:101").status == "done"
 
 
-def test_resume_requeues_a_done_record_whose_file_is_missing_here(xtream_server, monkeypatch, tmp_path):
+def test_resume_requeues_a_done_record_whose_file_is_missing_here_with_repair(
+    xtream_server, monkeypatch, tmp_path
+):
     """state.db can be shared across multiple download directories (e.g. an
     absolute configured state_db). A "done" record from a *different*
     directory must not make resume silently report "nothing to resume" here
-    when the file was never actually downloaded into this one."""
+    when the file was never actually downloaded into this one — but only
+    when --repair is passed; see the next test for why that's opt-in."""
     base_url, _state = xtream_server
     _set_env(monkeypatch, base_url)
 
@@ -615,7 +624,7 @@ def test_resume_requeues_a_done_record_whose_file_is_missing_here(xtream_server,
             store.mark_status("movie:101", "done")  # done elsewhere; not actually here
         assert not target.exists()
 
-        result = runner.invoke(main, ["resume", "--serial"])
+        result = runner.invoke(main, ["resume", "--serial", "--repair"])
 
         assert result.exit_code == 0, result.output
         assert "1 item(s) were marked done elsewhere but are missing here" in result.output
@@ -623,6 +632,43 @@ def test_resume_requeues_a_done_record_whose_file_is_missing_here(xtream_server,
         assert target.exists()
         with StateStore(Path("state.db")) as store:
             assert store.get("movie:101").status == "done"
+
+
+def test_resume_without_repair_leaves_a_done_record_alone_even_if_file_is_missing_here(
+    xtream_server, monkeypatch, tmp_path
+):
+    """Without --repair, resume trusts state.db's "done" status as-is and
+    never touches "done" records — confirmed live: someone who moves
+    finished downloads out of their download directory into a permanent
+    library got 83 already-complete episodes from unrelated shows silently
+    reset to pending and re-downloaded, purely because the disk check
+    (correctly, from its own point of view) couldn't find them where the
+    download had originally landed."""
+    base_url, _state = xtream_server
+    _set_env(monkeypatch, base_url)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        target = Path("Movies") / "Example Movie (2024)" / "Example Movie (2024).mp4"
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(
+                id="movie:101",
+                kind="movie",
+                title="Example Movie (2024)",
+                target_path=str(target),
+                container_extension="mp4",
+            )
+            store.mark_status("movie:101", "done")  # moved out to a permanent library, say
+        assert not target.exists()
+
+        result = runner.invoke(main, ["resume", "--serial"])
+
+        assert result.exit_code == 0, result.output
+        assert "were marked done elsewhere" not in result.output
+        assert "nothing to resume" in result.output
+        assert not target.exists()  # nothing re-downloaded
+        with StateStore(Path("state.db")) as store:
+            assert store.get("movie:101").status == "done"  # untouched
 
 
 def test_resume_leaves_a_genuinely_done_record_alone(xtream_server, monkeypatch, tmp_path):
@@ -820,6 +866,66 @@ def test_clean_asks_for_confirmation_by_default(tmp_path):
         runner.invoke(main, ["clean"], input="n\n")
 
         assert stray.exists()  # declined deletion
+
+
+def test_remove_drops_the_record_and_its_now_empty_target_dir(monkeypatch, tmp_path):
+    _set_env(monkeypatch, "http://127.0.0.1:1")  # never contacted
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        target_dir = Path("Movies") / "Dead Movie"
+        target_dir.mkdir(parents=True)  # left behind by a download that 404'd
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(
+                id="movie:999",
+                kind="movie",
+                title="Dead Movie",
+                target_path=str(target_dir / "Dead Movie.mkv"),
+            )
+            store.mark_status("movie:999", "failed", last_error="unexpected HTTP 404")
+
+        result = runner.invoke(main, ["remove", "movie:999"])
+
+        assert result.exit_code == 0, result.output
+        assert "removed 1 item(s)" in result.output
+        with StateStore(Path("state.db")) as store:
+            assert store.get("movie:999") is None
+        assert not target_dir.exists()  # empty dir cleaned up too
+
+
+def test_remove_leaves_a_nonempty_target_dir_alone(monkeypatch, tmp_path):
+    _set_env(monkeypatch, "http://127.0.0.1:1")
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        target_dir = Path("Movies") / "Partial Movie"
+        target_dir.mkdir(parents=True)
+        (target_dir / "cover.png").write_bytes(b"fake cover")
+        with StateStore(Path("state.db")) as store:
+            store.upsert_pending(
+                id="movie:998",
+                kind="movie",
+                title="Partial Movie",
+                target_path=str(target_dir / "Partial Movie.mkv"),
+            )
+
+        result = runner.invoke(main, ["remove", "movie:998"])
+
+        assert result.exit_code == 0, result.output
+        assert target_dir.exists()  # not empty -> left alone
+        assert (target_dir / "cover.png").exists()
+
+
+def test_remove_warns_on_an_unknown_id_without_failing(monkeypatch, tmp_path):
+    _set_env(monkeypatch, "http://127.0.0.1:1")
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with StateStore(Path("state.db")):
+            pass  # just create the db file
+
+        result = runner.invoke(main, ["remove", "movie:404"])
+
+        assert result.exit_code == 0, result.output
+        assert "no record for movie:404" in result.output
+        assert "removed 0 item(s)" in result.output
 
 
 def test_serve_reports_a_friendly_error_without_the_web_extra(monkeypatch, tmp_path):

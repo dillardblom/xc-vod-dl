@@ -9,7 +9,7 @@ from typing import Any
 
 @dataclass
 class ProgressEvent:
-    type: str  # "start" | "progress" | "total" | "complete" | "log"
+    type: str  # "queued" | "start" | "progress" | "total" | "complete" | "log"
     job_id: str
     data: dict[str, Any] = field(default_factory=dict)
 

@@ -14,6 +14,7 @@ from xc_vod_dl.gaps import (
     detect_gaps_across_series,
     detect_gaps_in_series,
     format_gap_report,
+    season_episode_counts,
 )
 from xc_vod_dl.jobs import JobSpec
 
@@ -247,7 +248,15 @@ def _search_series(client: XtreamClient, cache: dict[str, list]) -> list[JobSpec
             dupe_map = detect_duplicate_episodes_in_series(info)
             if gap_map or dupe_map:
                 label += "  [gaps]" if gap_map else "  [duplicates]"
-                console.print(f"[yellow]{format_gap_report(label.strip(), gap_map, dupe_map)}[/yellow]")
+                present_counts, declared_counts = season_episode_counts(info)
+                report = format_gap_report(
+                    label.strip(),
+                    gap_map,
+                    dupe_map,
+                    present_counts=present_counts,
+                    declared_counts=declared_counts,
+                )
+                console.print(f"[yellow]{report}[/yellow]")
         else:
             label += "  (season info unavailable)"
         choices.append(questionary.Choice(title=label, value=s))
@@ -381,7 +390,11 @@ def _pick_series_scope(
     gap_map = known_gap_map or detect_gaps_in_series(info)
     dupe_map = detect_duplicate_episodes_in_series(info)
     if gap_map or dupe_map:
-        console.print(f"[yellow]{format_gap_report(info.name, gap_map, dupe_map)}[/yellow]")
+        present_counts, declared_counts = season_episode_counts(info)
+        report = format_gap_report(
+            info.name, gap_map, dupe_map, present_counts=present_counts, declared_counts=declared_counts
+        )
+        console.print(f"[yellow]{report}[/yellow]")
 
     name = _prompt_rename(info.name)
     display_name = name if name != info.name else None

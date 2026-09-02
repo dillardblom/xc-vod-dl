@@ -1,9 +1,10 @@
-from xc_vod_dl.api.models import Episode
+from xc_vod_dl.api.models import Episode, Season, SeriesInfo
 from xc_vod_dl.gaps import (
     detect_duplicate_episodes,
     detect_gaps,
     detect_gaps_across_listings,
     format_gap_report,
+    season_episode_counts,
 )
 
 
@@ -54,6 +55,57 @@ def test_format_gap_report_with_gaps():
     report = format_gap_report("My Show", {1: [9]})
     assert "My Show" in report
     assert "S01E09" in report
+
+
+def test_format_gap_report_shows_present_over_expected_when_declared_count_known():
+    # 25 present, provider declares 50 -> reads as "half done", not just
+    # "25 missing" with no sense of how much of the season that is.
+    report = format_gap_report(
+        "My Show",
+        {3: list(range(26, 51))},
+        present_counts={3: 25},
+        declared_counts={3: 50},
+    )
+    assert "(25/50)" in report
+
+
+def test_format_gap_report_falls_back_to_present_plus_missing_when_declared_unknown():
+    # Provider doesn't populate season episode_count for this show -> fall
+    # back to a lower bound (present + missing) rather than omitting counts.
+    report = format_gap_report("My Show", {1: [9]}, present_counts={1: 8}, declared_counts={})
+    assert "(8/9)" in report
+
+
+def test_format_gap_report_omits_counts_when_present_counts_not_given():
+    report = format_gap_report("My Show", {1: [9]})
+    assert "(" not in report
+
+
+def test_season_episode_counts_present_from_episodes_declared_from_seasons_metadata():
+    info = SeriesInfo(
+        name="My Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[Season(season_number=1, name="Season 1", episode_count=10)],
+        episodes={1: [make_episode(1, n) for n in [1, 2, 3]]},
+    )
+    present, declared = season_episode_counts(info)
+    assert present == {1: 3}
+    assert declared == {1: 10}
+
+
+def test_season_episode_counts_declared_omits_seasons_with_no_declared_count():
+    info = SeriesInfo(
+        name="My Show",
+        plot="",
+        genre="",
+        tmdb_id=None,
+        seasons=[Season(season_number=1, name="Season 1", episode_count=0)],
+        episodes={1: [make_episode(1, 1)]},
+    )
+    _present, declared = season_episode_counts(info)
+    assert declared == {}
 
 
 def test_detect_duplicate_episodes_finds_a_repeated_number():

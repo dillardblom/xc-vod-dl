@@ -16,6 +16,7 @@ from xc_vod_dl.gaps import (
     detect_duplicate_episodes_in_series,
     detect_gaps_in_series,
     format_gap_report,
+    season_episode_counts,
 )
 from xc_vod_dl.jobs import JobSpec
 from xc_vod_dl.state.store import StateStore
@@ -105,12 +106,33 @@ def create_app(config: Config) -> FastAPI:
                 dupe_map = detect_duplicate_episodes_in_series(info)
                 entry["seasons"] = sorted(info.episodes)
                 entry["episode_count"] = sum(len(eps) for eps in info.episodes.values())
+                # Full per-season episode listing (number + title), not just
+                # the season numbers — the web UI otherwise had no way to
+                # queue anything narrower than the whole series, unlike the
+                # CLI's browse flow which already offers whole/season/single
+                # episode. The data's already fetched via get_series_info
+                # above (needed for gap detection); exposing it here is free.
+                entry["episodes"] = {
+                    str(season): [
+                        {"episode_num": ep.episode_num, "title": ep.title or f"Episode {ep.episode_num}"}
+                        for ep in sorted(eps, key=lambda e: e.episode_num)
+                    ]
+                    for season, eps in sorted(info.episodes.items())
+                }
                 entry["resolution"] = _sample_resolution(info)
                 entry["gaps"] = gap_map
                 entry["duplicates"] = dupe_map
-                entry["report"] = (
-                    format_gap_report(s.name, gap_map, dupe_map) if (gap_map or dupe_map) else None
-                )
+                if gap_map or dupe_map:
+                    present_counts, declared_counts = season_episode_counts(info)
+                    entry["report"] = format_gap_report(
+                        s.name,
+                        gap_map,
+                        dupe_map,
+                        present_counts=present_counts,
+                        declared_counts=declared_counts,
+                    )
+                else:
+                    entry["report"] = None
             else:
                 entry["seasons"] = None
                 entry["error"] = "could not load season info"

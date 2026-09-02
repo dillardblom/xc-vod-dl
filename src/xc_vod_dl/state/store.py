@@ -169,3 +169,13 @@ class StateStore:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM downloads ORDER BY id").fetchall()
         return [DownloadRecord._from_row(r) for r in rows]
+
+    def remove(self, id: str) -> bool:
+        """Drops a single record entirely — for an item that will never
+        succeed (e.g. content pulled from the upstream catalog) and would
+        otherwise sit in `resume`'s retry list forever. Returns whether a
+        record actually existed to remove."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM downloads WHERE id = ?", (id,))
+            self._conn.commit()
+        return cur.rowcount > 0

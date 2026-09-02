@@ -81,9 +81,21 @@ succeeded, `1` on partial/total failure — safe to use in scripts/cron.
 ```bash
 xc-vod-dl gaps --series-id 6789        # report missing episodes, no download
 xc-vod-dl resume                       # retry anything left pending/failed in state.db
+xc-vod-dl resume --repair              # also re-queue "done" items whose file is missing here
 xc-vod-dl status                       # show what's pending/downloading/failed/done — no side effects
 xc-vod-dl clean                        # remove stray .voddl (unverified partial) files
+xc-vod-dl remove movie:58008           # drop an item (e.g. removed upstream) from state.db for good
 ```
+
+`resume` trusts state.db's "done" status as-is by default — it only acts on
+pending/downloading/verifying/failed. `--repair` additionally cross-checks
+every "done" record against disk and re-queues anything actually missing,
+for when `state.db` is shared across directories (or restored from a
+backup) and might be out of sync with what's really there. It's opt-in
+rather than the default because it assumes "done" files never move — if you
+treat your download directory as temporary staging and move finished files
+out to a permanent library afterward, `--repair` will see them as "missing"
+and re-download them.
 
 `status` groups everything currently tracked in `state.db` by status — exactly
 what a `resume` would act on, without actually running one. `done` items are

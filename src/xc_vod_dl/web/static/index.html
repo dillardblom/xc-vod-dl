@@ -21,6 +21,9 @@
   .result-meta { opacity: .7; font-size: .85rem; }
   .rename { width: 100%; margin-top: .4rem; padding: .3rem; display: none; }
   .result.selected .rename { display: block; }
+  .scope-row { display: none; gap: .5rem; margin-top: .4rem; }
+  .result.selected .scope-row { display: flex; }
+  .scope-row select { padding: .25rem; max-width: 60%; }
   .gap-report { white-space: pre-wrap; font-size: .8rem; margin-top: .4rem; padding: .4rem .6rem; border-radius: 6px; background: #f5a62333; }
   .gap-report.dupe-only { background: #4a90e233; }
   .actions { margin: 1rem 0; }
@@ -32,8 +35,10 @@
   .job-bar-fill { background: #4a90e2; height: 100%; width: 0%; transition: width .3s; }
   .job-bar-fill.done { background: #2ecc71; }
   .job-bar-fill.failed { background: #e74c3c; }
+  .job-bar-fill.pending { background: #8886; }
   .job-meta { font-size: .78rem; opacity: .7; margin-top: .2rem; }
   .empty { opacity: .6; font-style: italic; }
+  #queue-summary { font-size: .85rem; opacity: .75; margin: -.5rem 0 .8rem; }
 </style>
 </head>
 <body>
@@ -57,6 +62,7 @@
 
 <div id="jobs">
   <h2>Downloads</h2>
+  <div id="queue-summary"></div>
   <div id="jobs-list" class="empty">Nothing running yet.</div>
 </div>
 
@@ -122,12 +128,29 @@ function renderResults(data) {
       meta += `  (${extra})`;
     }
 
+    // Series results get a season/episode scope picker — without this the
+    // web UI could only ever queue a whole series, unlike the CLI's browse
+    // flow (whole series / one season / one episode). Only offered when
+    // the per-season episode listing actually came back (a series whose
+    // info failed to load has item.seasons === null).
+    const hasScopePicker = kind === "series" && item.seasons && item.seasons.length > 0;
+
     div.innerHTML = `
       <div class="result-head">
         <input type="checkbox">
         <span class="result-name">${escapeHtml(item.name)}</span>
         <span class="result-meta">${escapeHtml(meta)}</span>
       </div>
+      ${hasScopePicker ? `
+      <div class="scope-row">
+        <select class="season-select">
+          <option value="">Whole series</option>
+          ${item.seasons.map((s) => `<option value="${s}">Season ${s}</option>`).join("")}
+        </select>
+        <select class="episode-select" style="display:none;">
+          <option value="">Whole season</option>
+        </select>
+      </div>` : ""}
       <input type="text" class="rename" placeholder="Rename (optional) — leave as-is to keep original" value="">
       ${item.report ? `<div class="gap-report${item.gaps && Object.keys(item.gaps).length ? "" : " dupe-only"}">${escapeHtml(item.report)}</div>` : ""}
     `;
@@ -136,6 +159,24 @@ function renderResults(data) {
       div.classList.toggle("selected", checkbox.checked);
       updateDownloadButton();
     });
+    if (hasScopePicker) {
+      const seasonSelect = div.querySelector(".season-select");
+      const episodeSelect = div.querySelector(".episode-select");
+      seasonSelect.addEventListener("change", () => {
+        const season = seasonSelect.value;
+        episodeSelect.innerHTML = '<option value="">Whole season</option>';
+        if (season && item.episodes && item.episodes[season]) {
+          for (const ep of item.episodes[season]) {
+            const opt = document.createElement("option");
+            opt.value = ep.episode_num;
+            opt.textContent = `E${ep.episode_num} - ${ep.title}`;
+            episodeSelect.appendChild(opt);
+          }
+        }
+        episodeSelect.style.display = season ? "" : "none";
+        episodeSelect.value = "";
+      });
+    }
     resultsEl.appendChild(div);
   }
 }
@@ -158,19 +199,33 @@ document.getElementById("download-btn").onclick = async () => {
     if (!checkbox.checked) return;
     const id = parseInt(div.dataset.id, 10);
     const renameInput = div.querySelector(".rename").value.trim();
-    const item = lastResults.find((r) => r.id === id);
+    const seasonSelect = div.querySelector(".season-select");
+    const episodeSelect = div.querySelector(".episode-select");
+    const season = seasonSelect && seasonSelect.value ? parseInt(seasonSelect.value, 10) : null;
+    const episode = episodeSelect && episodeSelect.value ? parseInt(episodeSelect.value, 10) : null;
     selected.push({
       kind,
       id,
+      season,
+      episode,
       display_name: renameInput || null,
     });
   });
   if (selected.length === 0) return;
-  await fetch("/api/download", {
+  const res = await fetch("/api/download", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(selected),
   });
+  if (res.ok) {
+    const data = await res.json();
+    // Resolving a selection into real per-item downloads (one API call per
+    // series/movie) can take a few seconds, and a selection can also land
+    // behind another one still downloading — without this, clicking
+    // Download looked like it did nothing until the first real progress
+    // event happened to arrive.
+    showLog(`Selection added (${data.queued}), preparing…`);
+  }
   document.querySelectorAll('.result input[type=checkbox]:checked').forEach((cb) => (cb.checked = false));
   document.querySelectorAll(".result.selected").forEach((div) => div.classList.remove("selected"));
   updateDownloadButton();
@@ -203,6 +258,16 @@ function updateJobRow(jobId, meta) {
   const div = ensureJobRow(jobId, meta.title);
   const fill = div.querySelector(".job-bar-fill");
   const metaEl = div.querySelector(".job-meta");
+  fill.classList.remove("done", "failed", "pending");
+  if (meta.status === "pending") {
+    // Registered (visible in state.db/status) but its download batch
+    // hasn't reached the front of the queue yet — distinct from an actual
+    // in-progress transfer so it doesn't look like a stalled 0% download.
+    fill.classList.add("pending");
+    fill.style.width = "100%";
+    metaEl.textContent = "queued, waiting to start";
+    return;
+  }
   const total = meta.total;
   const completed = meta.completed || 0;
   if (total) {
@@ -212,7 +277,6 @@ function updateJobRow(jobId, meta) {
     fill.style.width = "100%";
     metaEl.textContent = `${formatBytes(completed)} (total unknown)`;
   }
-  fill.classList.remove("done", "failed");
   if (meta.status === "done") {
     fill.classList.add("done");
     fill.style.width = "100%";
@@ -221,6 +285,31 @@ function updateJobRow(jobId, meta) {
     fill.classList.add("failed");
     metaEl.textContent = "failed";
   }
+}
+
+function updateQueueSummary() {
+  const summaryEl = document.getElementById("queue-summary");
+  const values = Object.values(jobsState);
+  if (values.length === 0) {
+    summaryEl.textContent = "";
+    return;
+  }
+  const done = values.filter((v) => v.status === "done").length;
+  const failed = values.filter((v) => v.status === "failed").length;
+  const queued = values.length - done - failed;
+  summaryEl.textContent =
+    `Queue: ${queued}  •  Done: ${done}` + (failed ? `  •  Failed: ${failed}` : "");
+}
+
+function showLog(message) {
+  if (jobsEl.classList.contains("empty")) {
+    jobsEl.classList.remove("empty");
+    jobsEl.innerHTML = "";
+  }
+  const div = document.createElement("div");
+  div.className = "job";
+  div.innerHTML = `<div class="job-meta">${escapeHtml(message)}</div>`;
+  jobsEl.prepend(div);
 }
 
 function formatBytes(n) {
@@ -240,11 +329,24 @@ es.addEventListener("snapshot", (e) => {
     jobsState[jobId] = meta;
     updateJobRow(jobId, meta);
   }
+  updateQueueSummary();
+});
+es.addEventListener("queued", (e) => {
+  // Registered right after being resolved — well before its batch's turn
+  // to actually download comes up, so a selection shows up here almost
+  // immediately instead of only once bytes start moving.
+  const data = JSON.parse(e.data);
+  if (!jobsState[data.job_id]) {
+    jobsState[data.job_id] = { title: data.title, completed: 0, total: null, status: "pending" };
+  }
+  updateJobRow(data.job_id, jobsState[data.job_id]);
+  updateQueueSummary();
 });
 es.addEventListener("start", (e) => {
   const data = JSON.parse(e.data);
   jobsState[data.job_id] = { title: data.title, completed: 0, total: null, status: "downloading" };
   updateJobRow(data.job_id, jobsState[data.job_id]);
+  updateQueueSummary();
 });
 es.addEventListener("progress", (e) => {
   const data = JSON.parse(e.data);
@@ -263,6 +365,7 @@ es.addEventListener("complete", (e) => {
   const meta = jobsState[data.job_id] || (jobsState[data.job_id] = { completed: 0 });
   meta.status = data.ok ? "done" : "failed";
   updateJobRow(data.job_id, meta);
+  updateQueueSummary();
 });
 es.addEventListener("log", (e) => {
   // Server-side notices with no specific job to attach to (e.g. a whole
@@ -270,14 +373,7 @@ es.addEventListener("log", (e) => {
   // silently failed server-side looked identical to one that was never
   // received at all.
   const data = JSON.parse(e.data);
-  if (jobsEl.classList.contains("empty")) {
-    jobsEl.classList.remove("empty");
-    jobsEl.innerHTML = "";
-  }
-  const div = document.createElement("div");
-  div.className = "job";
-  div.innerHTML = `<div class="job-meta">${escapeHtml(data.message || "")}</div>`;
-  jobsEl.prepend(div);
+  showLog(data.message || "");
 });
 </script>
 </body>
